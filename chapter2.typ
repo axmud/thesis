@@ -1,4 +1,4 @@
-= Interface Co-Simulation Design
+= Interface Co-Simulation Design <ch2>
 == Selecting the Suitable Simulator
  The development and testing of autonomous driving technologies require a robust simulation environment. This environment must accurately model the real world, including vehicles, pedestrians, and various environmental conditions, while also providing comprehensive support for sensor simulation and enabling integration with analytical tools. After a detailed evaluation of existing simulators, including the Waymo Simulator, LGSVL Simulator, Sim4CV, and CARLA Simulator, based on critical features such as graphic quality, the accuracy of the physics engine, sensor simulation capabilities, the simulation of traffic and pedestrians, weather conditions, the ability to simulate different times of day, CARLA Simulator has been identified as the most suitable choice for my research objectives. CARLA provides high-quality graphics with Unreal Engine 4 @unreal_engine_4 and its physics engine accurately models vehicle dynamics and environmental interactions, offering a solid foundation for testing autonomous driving algorithms under various conditions. Moreover, its ability to simulate a wide range of sensors used in autonomous vehicles, such as cameras, LIDAR, radar, and GNSS, with high fidelity is crucial for the development and testing of perception algorithms. CARLA also excels in simulating dynamic traffic scenarios and pedestrian behaviors, facilitating comprehensive testing of autonomous driving systems in complex urban environments. The capability to simulate different weather conditions and times of day is important for assessing the performance of autonomous vehicle systems under various environmental conditions. For my research, CARLA’s Python API facilitates easy integration with an external controller, providing a seamless workflow for data analysis and algorithm testing. Consequently, CARLA Simulator’s advanced graphics, accurate physics engine, extensive sensor simulation capabilities, and effective traffic and pedestrian simulation set it as the ideal choice for my autonomous driving research. Its compatibility with Python API further supports my analytical and development needs, making it the most suitable simulator for my project.
  == Modeling the Car in the Environment
@@ -66,103 +66,16 @@ To accomplish this, we first need specific reference values. These reference val
 
 == Data Gathering with Autonomous Driving Mode
 A reference point was selected from the Carla Map to collect reference data. The vehicle was spawned at this reference point. A simulation duration was determined based on a finish point we had predetermined. The vehicle was moved using Carla’s autonomous driving mode. During this time, the necessary reference position, waypoint data, yaw angle, and speed data were recorded into a ```.csv``` file at intervals of $T_s = 0.05$ seconds. Once the required simulation duration was completed, the vehicle was removed from the map.
-#raw("
-...
 
-def carla_data_collector(vehicle: carla.Vehicle):
-    time = carla.Timestamp.frame
-    transform = vehicle.get_transform()
-    location = transform.location
-    location_dictionary = {\"x\": location.x, \"y\": location.y, \"z\": location.z}
-    rotation = transform.rotation
-    rotation_dictionary = {\"pitch\": rotation.pitch, \"yaw\": rotation.yaw, \"roll\": rotation.roll}
-    velocity = vehicle.get_velocity()
-    velocity_dictionary = {\"x\": velocity.x, \"y\": velocity.y, \"z\": velocity.z}
-    acceleration = vehicle.get_acceleration()
-    acceleration_dictionary = {\"x\": acceleration.x, \"y\": acceleration.y, \"z\": acceleration.z}
-    angular_velocity = vehicle.get_angular_velocity()
-    angular_velocity_dictionary = {\"x\": angular_velocity.x, \"y\": angular_velocity.y, \"z\": angular_velocity.z}
-    vehicle_world = vehicle.get_world()
-    waypoint = vehicle_world.get_map().get_waypoint(location)
-    waypoint_dictionary = {\"x\": waypoint.transform.location.x, \"y\": waypoint.transform.location.y, \"z\": waypoint.transform.location.z}
-    all_data = {\"time\": time, \"location\": location_dictionary, \"rotation\": rotation_dictionary, \"velocity\": velocity_dictionary, \"acceleration\": acceleration_dictionary, \"angular_velocity\": angular_velocity_dictionary, \"waypoint\": waypoint_dictionary}
-    return all_data
+Two collector routines are used during the recording. The first one, `carla_data_collector`, queries the full localization information of the vehicle at every tick: world position $(x, y, z)$, rotation (pitch, yaw, roll), linear velocity, linear acceleration and angular velocity. The second one, `carla_data_collector_2`, focuses on the geometry of the lane and returns, for each tick, the position of the closest waypoint together with the unit forward vector $hat(t) = (t_x, t_y)$ tangent to the lane in the legal direction of travel. The two collectors are complementary: the first one captures the dynamic state of the ego vehicle, the second one captures the geometric reference that the lane-keeping controller will track. The complete listings of both routines are reported in @app:b for completeness; here we only describe the meaning of the recorded fields.
 
-def carla_data_collector_2(vehicle: carla.Vehicle):
-    world = vehicle.get_world()
-    frame = world.get_snapshot().frame
-    waypoint = vehicle.get_world().get_map().get_waypoint(vehicle.get_transform().location)
-
-    waypoint_location = waypoint.transform.location
-    waypoint_forward_vector = waypoint.transform.get_forward_vector()
-    vector_x = waypoint_forward_vector.x
-    vector_y = waypoint_forward_vector.y
-    waypoint_dictionary = {\"x\": waypoint_location.x, \"y\": waypoint_location.y, \"vector_x\": vector_x, \"vector_y\": vector_y}
-    return waypoint_dictionary
-    
-    ...
-    
-data = {
-    \"waypoint_x\": [],
-    \"waypoint_y\": [],
-    \"vector_x\": [],
-    \"vector_y\": []
-}
-
-...
-
-all_data = carla_data_collector_2(ego_vehicle)
-    if not data[\"waypoint_x\"] and not data[\"waypoint_y\"]:
-        data[\"waypoint_x\"].append(all_data[\"x\"])
-        data[\"waypoint_y\"].append(all_data[\"y\"])
-        data[\"vector_x\"].append(all_data[\"vector_x\"])
-        data[\"vector_y\"].append(all_data[\"vector_y\"])
-    else:
-        if all_data[\"x\"] != data[\"waypoint_x\"][-1] and all_data[\"y\"] != data[\"waypoint_y\"][-1]:
-            data[\"waypoint_x\"].append(all_data[\"x\"])
-            data[\"waypoint_y\"].append(all_data[\"y\"])
-            data[\"vector_x\"].append(all_data[\"vector_x\"])
-            data[\"vector_y\"].append(all_data[\"vector_y\"])", lang: "python", block: true)
+In order to keep the resulting `.csv` file compact, the second collector is wrapped by a duplicate-suppression block. The position of the closest waypoint can remain unchanged for several consecutive ticks—for instance when the vehicle stops at a traffic light—and writing identical rows to the file would simply increase its size without adding information. The block compares each new sample with the last one written and appends it only if at least one of the two coordinates has changed. The resulting file therefore contains a strictly monotonic sampling of the centre line, indexed by the order in which the waypoints were visited.
 == Data Gathering with Manual Driving Mode
 The first capability that we demonstrate with CARLA is localization, which allows our ego-vehicle to determine its pose in the world. Two coordinate frames: the map frame, which is a coordinate frame that is fixed at the initial position of the map, and the vehicle frame, which is a coordinate frame attached to the middle of the rear axle of the vehicle. For our particular experiment, we record the vehicle’s accurate pose while traversing a curved-straight route in the Town10. In the Python API, there is a class that comprises all the localization information for an actor at a certain moment in time; its methods comprise Getters such as ``` get_acceleration```, ``` get_velocity```, ``` get_transform```, and ``` get_angular_velocity```- which in our case we utilize the ``` get_transform``` method which includes both location of the object ($X$, $Y$, $Z$ from the origin of the map) in meters, and its rotation characteristics from which we utilize the yaw values. More concisely, $X$ and $Y$ coordinates were our focus, as in the map chosen, the road is entirely flat. Hence only these two coordinates remain crucial for tracking the vehicle’s trajectory. Also, the Yaw angle, describing the orientation of the map’s coordinate system, is essential for indication of the direction the vehicle is facing. Therefore for curved paths, which our scenarios contain, it is important.
 
 Some additional considerations also are to be noted, such as the sampling rate, which determines the time step of the data collection. We have chosen $0.1$, indicating not too sparse to miss some critical dynamics, especially for sharp turns, and also not too frequent leading to redundant information.
 
-After initializing the scenario and ego vehicle (based on the preferences), based on the duration of the scenario depending on the controls of the car (throttle, brake, and steering commands), we record the data of the vehicle at each time step; for better understanding the following Script used in the development is provided;
-
-#raw("
-import carla
-import pandas as pd
-
-# A dictionary that accumulates one row of data per simulation step
-data = {
-    \"frame\": [], \"x\": [], \"y\": [], \"yaw\": [],
-    \"v_x\": [], \"v_y\": [], \"a_x\": [],
-    \"throttle\": [], \"brake\": [], \"steer\": []
-}
-
-while not crashed:
-    world.tick()                       # Advance the synchronous simulation
-    snapshot = world.get_snapshot()
-    transform = ego_vehicle.get_transform()
-    velocity = ego_vehicle.get_velocity()
-    acceleration = ego_vehicle.get_acceleration()
-    control = ego_vehicle.get_control()
-
-    data[\"frame\"].append(snapshot.frame)
-    data[\"x\"].append(transform.location.x)
-    data[\"y\"].append(transform.location.y)
-    data[\"yaw\"].append(transform.rotation.yaw)
-    data[\"v_x\"].append(velocity.x)
-    data[\"v_y\"].append(velocity.y)
-    data[\"a_x\"].append(acceleration.x)
-    data[\"throttle\"].append(control.throttle)
-    data[\"brake\"].append(control.brake)
-    data[\"steer\"].append(control.steer)
-
-    # ... PyGame rendering and event handling ...
-
-pd.DataFrame(data).to_csv(\"manual_drive_log.csv\", index=False)", lang: "python", block: true)
+After initializing the scenario and ego vehicle (based on the preferences), based on the duration of the scenario depending on the controls of the car (throttle, brake, and steering commands), we record the data of the vehicle at each time step. The corresponding logging routine has the same overall structure as in the autonomous mode—at every simulation tick the snapshot frame, the pose, the velocity, the acceleration and the applied control are appended to a Pandas dictionary which is finally written to disk as a `.csv` file. The full code excerpt is provided in @app:b.
 
 In manual driving mode, the autopilot is disengaged with `vehicle.set_autopilot(False)` and the user is given full control of throttle, brake, and steering through the keyboard. Each pressed key is captured as a PyGame event and is translated into a `carla.VehicleControl` object that is then applied to the ego vehicle in the simulator. While the user drives, the same getters introduced for the autonomous mode are queried at every simulation tick, so that the resulting `.csv` file shares the same structure for both modes and can be loaded by the controller without any additional preprocessing.
 

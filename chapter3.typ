@@ -1,45 +1,45 @@
 #import "functions.typ": *
-= Lane Keeping Assist Implementation in CARLA <ch3>
+= Lane Keeping Assist: Theory, Architectures and Method Comparison <ch3>
 
-The previous chapter established the simulation environment, the vehicle model and the data acquisition pipeline. This chapter describes how those building blocks are combined into a working Lane Keeping Assist (LKA) function. The implementation is centred on a single Python program, `pygame_controller.py`, which connects to the CARLA server, spawns the ego vehicle and the surrounding traffic, attaches an RGB camera, computes the lateral offset of the vehicle with respect to the centre of the lane, and feeds this offset to a discrete-time PID controller that returns a steering command. The same program also exposes a manual override through the keyboard so that the driver can take control at any moment. A reference implementation provided by the CARLA framework, `local_planner.py`, is discussed at the end of the chapter to position the proposed controller relative to the standard library tooling.
+The previous chapter established the simulation environment, the vehicle model and the data-gathering pipeline. This chapter develops the lateral-control component of the Lane Keeping Assist (LKA) function and presents three progressively richer architectures that have been implemented in the same CARLA framework. The discussion is deliberately kept theoretical: the goal of the chapter is to make explicit _why_ each design choice was made, what the corresponding plant model looks like, and what the analytical tuning procedure predicts in terms of closed-loop behaviour. Code excerpts are gathered in @app:b so that the present chapter can focus on the reasoning. The numerical evaluation of each controller in the simulator is the subject of the next chapter.
 
-== Co-Simulation Architecture
-The Lane Keeping Assist function is implemented as an external client that communicates with the CARLA server through the Python API. The server, running the Unreal Engine renderer and the physics integration, is responsible for the propagation of the world state at a fixed time step. The client retrieves the relevant fraction of that state—the pose of the ego vehicle, the geometry of the closest lane, and the latest camera frame—computes a control command, and sends it back to the server before the next tick is requested. Conceptually this is the same pattern used in any Vehicle-in-the-Loop setup, with the difference that here the "vehicle" is itself a simulated actor rather than a physical platform.
+The chapter is structured as follows. @sec_lka_overview gives a high-level description of the three architectures and motivates the order in which they are introduced. @sec_bicycle revisits the kinematic bicycle model of @ch2 from the perspective of control-oriented modelling, and derives the input-output transfer function from the steering command to the lateral state of the vehicle. @sec_pid_theory recalls the PID feedback law and its discrete-time implementation, with particular attention to the issues of integral wind-up and output saturation that arise in any practical realisation. @sec_xtrack and @sec_heading then specialise the general framework to the two error signals that are most commonly used in path-following applications: the cross-track distance and the heading error to a look-ahead point. The two formulations differ only in the choice of error signal, but as it will be shown, this single choice has profound consequences on the order of the resulting plant, on the type of controller that is required for stability, and on the way the gains have to be scheduled with vehicle speed. @sec_sysid presents a systematic identification procedure that fits the parameters of the plant from open-loop step responses recorded in the simulator, and derives analytical PID gains from a pole-placement criterion. @sec_vision finally extends the heading-error formulation with a perception layer based on a deep convolutional lane-detection network and on inverse perspective mapping, which removes the dependence on a pre-recorded reference path. @sec_comparison summarises the relative merits of the three approaches from a control-theoretic standpoint.
 
-Three design choices are essential to make this loop reproducible:
+== Overview of the Three Architectures <sec_lka_overview>
+The lateral-control function has been implemented in three increasingly sophisticated forms, each of which is studied in a dedicated module of the source tree:
 
-*Synchronous mode.* The simulator is configured so that the world only advances when the client explicitly calls `world.tick()`. Without this setting, the server would tick at its own rate and the controller would observe a non-deterministic stream of measurements. The corresponding configuration in the implementation is reported below.
+#list(
+  [_Cross-track PID_ (`lane_shift_pid/`). The lateral error is the signed perpendicular distance between the vehicle and the closest waypoint on the recorded reference path. A discrete-time PID controller produces the steering command directly from this distance.],
+  [_Heading-error PID_ (`heading_error_pid/`). The lateral error is the signed angle between the vehicle's forward direction and the line that connects the vehicle to a look-ahead point placed on the reference path at a speed-dependent distance ahead. The error signal is now an angle, and a discrete-time PI controller is sufficient to drive it to zero.],
+  [_Vision-based heading-error PID_ (`detection&pid.py`). The reference path is no longer read from a pre-recorded `.csv` file. Instead, the centre line of the lane is reconstructed at every tick from the RGB camera using a deep convolutional lane-detection network and an inverse-perspective-mapping projection. A look-ahead target is selected on the reconstructed centre line and is fed to the same PI controller as in the previous case.]
+)
 
-#raw("settings = world.get_settings()
-settings.synchronous_mode = True
-settings.no_rendering_mode = True   # rendering is delegated to PyGame
-settings.fixed_delta_seconds = 0.05 # 20 Hz simulation rate
-world.apply_settings(settings)
+The three architectures are sketched side by side in @three_arch. They share the same actuator (the `carla.VehicleControl.steer` field), the same simulation rate ($T_s = 0.05$ s), the same vehicle dynamics, and—crucially—the same lateral plant up to the choice of the error signal. The differences between them are confined to two well-defined components: the way the lateral error is constructed, and the structure of the PID controller that consumes it. This modular separation makes it possible to compare the three approaches on equal footing, and to attribute the observed differences in behaviour to specific design choices rather than to incidental implementation details.
 
-traffic_manager = client.get_trafficmanager()
-traffic_manager.set_synchronous_mode(True)
-traffic_manager.set_random_device_seed(0)", lang: "python", block: true)
+#figure(image("image/three_architectures.jpeg"), caption: [Block-diagram comparison of the three lateral-control architectures investigated in this thesis. The first one closes the loop on the cross-track distance computed against a recorded path; the second one closes the loop on a heading angle derived from a speed-dependent look-ahead point; the third one replaces the recorded path with a perception pipeline that reconstructs the centre line of the lane from the camera image. All three architectures share the same actuator, the same vehicle dynamics, and the same PID structure.]) <three_arch>
 
-A fixed step of $T_s=0.05$ s ($20$ Hz) is small enough to capture the closed-loop dynamics of the steering channel—whose bandwidth on a passenger car rarely exceeds a few hertz—and large enough not to overload the network connection between the client and the server.
+== The Kinematic Bicycle Model Revisited <sec_bicycle>
+The kinematic bicycle model introduced in @ch2 is the simplest description of the planar motion of a four-wheeled vehicle. It collapses the front pair of wheels into a single equivalent wheel placed at the front axle, and similarly for the rear pair, and ignores tyre slip. Under these assumptions the configuration of the vehicle is fully described by three quantities: the position $(x, y)$ of a reference point—conventionally taken at the centre of the rear axle—and the yaw angle $psi$ that the body of the vehicle makes with the world $x$-axis. The configuration space is therefore $RR^2 times S^1$, and a useful sketch of its variables is given in @bicycle.
 
-*Deterministic traffic.* The Traffic Manager is also placed in synchronous mode and seeded with a fixed value. Each surrounding vehicle is then spawned at a randomly chosen spawn point and given to the Traffic Manager through `set_autopilot(True)`. To create a slightly more challenging environment, a random fraction of the vehicles is allowed to ignore traffic lights through `traffic_manager.ignore_lights_percentage`. Because the random seed is fixed, the same scenario can be replayed an arbitrary number of times—an essential property for tuning the controller and for comparing two configurations of the same algorithm.
+#figure(image("image/bicycle_model.jpeg"), caption: [Kinematic bicycle model. The vehicle has wheelbase $L$, longitudinal speed $v$ at the rear axle, yaw angle $psi$ relative to the world $x$-axis, and a front steering angle $delta$ measured from the longitudinal axis of the body. The yaw rate $accent(psi, dot)$ is determined by the geometry of the model.]) <bicycle>
 
-*External rendering.* The third setting, `no_rendering_mode = True`, disables the in-engine spectator window. The visual feedback is instead drawn by PyGame, using the frames produced by an RGB camera attached to the ego vehicle. This decoupling has two advantages: first, the engine no longer needs to render the third-person spectator view, which reduces the load on the GPU; second, the same callback that produces the on-screen image can in principle be replaced or extended with image-processing routines, which keeps the door open for a perception-based version of the controller.
+Two scalar control inputs act on the model: the longitudinal speed $v$ at the rear axle, controlled through the throttle and brake pedals, and the steering angle $delta$ at the front wheel. With these inputs, the equations of motion of the bicycle are
+$ accent(x, dot) = v cos psi $
+$ accent(y, dot) = v sin psi $
+$ accent(psi, dot) = v / L tan delta $
+where $L$ is the wheelbase. For the small steering angles that occur in normal driving—the LKA function is by definition active only inside the lane, so $abs(delta) < 5 degree$ in almost every situation—the small-angle approximation $tan delta approx delta$ holds with negligible error and the yaw-rate equation simplifies to
+$ accent(psi, dot) = v / L delta $
 
-The resulting control loop is sketched in @lka_arch. At every tick, four operations are executed in sequence: the world is advanced, the ego state and the lane reference are queried, the lateral controller produces a steering command, and the manual-override block decides whether to apply that command or to forward the keyboard inputs of the driver instead.
+In the CARLA Python API, the steering input is not the physical steering angle $delta$ but a normalised "steer command" $delta_c in [-1, +1]$ that the simulator scales internally by a vehicle-specific maximum angle $delta_max$. The relationship $delta = K_"steer" delta_c$ with $K_"steer" approx delta_max$ is approximately linear in the regime of interest @kebbati. Plugging this relationship into the yaw-rate equation gives the relation between the actuator command and the resulting yaw rate:
+$ accent(psi, dot) = v K_"steer" / L  delta_c $
 
-#figure(image("image/lane_shift_geometry.jpeg"), caption: [Block diagram of the proposed Lane Keeping Assist co-simulation. The CARLA server holds the world state; the client computes the steering command from the lane reference and the vehicle pose, and applies it through `vehicle.apply_control`.]) <lka_arch>
+The key observation is that $accent(psi, dot)$ depends linearly on the steering command and on the speed. The factor $v/L$ appears because at higher speeds the same steering angle traces a larger arc per unit time. From a control-theory perspective, the steering channel of the vehicle is an _open-loop integrator_ whose gain scales with speed: if the steering command is held constant, the yaw rate is constant and the heading angle grows linearly in time. This integrator is the building block from which the two plants of @sec_xtrack and @sec_heading will be constructed.
 
-== Lateral Control: Theoretical Background
-Lateral control is the part of the driving task that decides _how much to steer_. From the point of view of the lane keeping problem, the goal is to drive a scalar error signal—the lateral offset of the vehicle with respect to the centre of the lane—to zero. Several control laws are commonly used for this purpose; geometric trackers such as Pure Pursuit @snider2009automatic and Stanley @7795743 derive a steering angle directly from a look-ahead point on the reference path, while feedback-based formulations close the loop on the offset itself. A comparative discussion of these strategies is given in the lateral-control review by Kebbati et al. @kebbati and in the experimental study of Artuñedo et al. @ARTUNEDO2024100910. In the present work the controller is realised with a Proportional–Integral–Derivative (PID) feedback law because of its simplicity, the low number of parameters to tune, and the clear interpretation of each term in the context of lane keeping.
+== The PID Feedback Law <sec_pid_theory>
+A Proportional–Integral–Derivative controller computes the control action $u(t)$ as a linear combination of three terms: the present error, the accumulated past error, and the rate of change of the error. Given a scalar error signal $e(t)$, the continuous-time PID law is
+$ u(t) = K_p e(t) + K_i integral_0^t e(tau) d tau + K_d (d e(t))/(d t) $ <eq_pid_cont>
 
-=== The Continuous-Time PID Law
-Let $e(t)$ denote the lateral error of the vehicle with respect to the centre of the lane at time $t$. A PID controller produces a steering-related command $u(t)$ as the linear combination of three terms:
-$ u(t) = K_p e(t) + K_i integral_0^t e(tau) d tau + K_d (d e(t))/(d t) $
-
-Each term has an intuitive role in the LKA context. The proportional term $K_p e(t)$ produces a steering action proportional to the present offset and is responsible for the immediate reaction of the controller. The integral term $K_i integral e(tau) d tau$ accumulates the past error and removes the steady-state bias that may appear, for instance, on a constantly cambered road or under a small wheel-alignment offset. The derivative term $K_d accent(e,.) (t)$ anticipates the future evolution of the error from its rate of change and adds damping when the vehicle is approaching the centre of the lane.
-
-The qualitative effect of changing each gain is summarised in @pid_effects. These dependencies are well known in the control literature; they are repeated here only because they directly inform the manual tuning that was carried out during the implementation.
+Each term plays a specific role in the LKA context. The proportional term $K_p e(t)$ produces an immediate reaction whose magnitude is proportional to the present error and is responsible for the fast component of the response. The integral term $K_i integral e(tau) d tau$ accumulates the past error and removes the steady-state offset that would otherwise persist when the plant has finite DC gain or when the disturbance is constant—for instance on a constantly cambered road, or under a small wheel-alignment offset. The derivative term $K_d accent(e, dot)(t)$ anticipates the future evolution of the error from its rate of change and adds damping when the error is approaching zero. The qualitative effect of changing each gain on the closed-loop response is summarised in @pid_effects; these dependencies are well known from the control literature @astrom and are repeated here only because they directly inform the manual tuning that has been performed during the development.
 
 #text(size: 9.4558pt, top-edge: "cap-height", bottom-edge: "baseline")[#figure(
   table(
@@ -54,316 +54,170 @@ The qualitative effect of changing each gain is summarised in @pid_effects. Thes
 ) <pid_effects>]
 
 === Discrete-Time Implementation
-The controller runs at the same frequency as the simulator, that is at $T_s=0.05$ s. The continuous-time integral and derivative therefore have to be approximated. Using the backward-Euler rule for the integral and a first-order backward difference for the derivative, the PID law becomes
-$ I[k] = I[k-1] + e[k] T_s $
-$ D[k] = (e[k] - e[k-1])/T_s $
-$ u[k] = K_p e[k] + K_i I[k] + K_d D[k] $
+The controller runs at the same frequency as the simulator, that is at $T_s = 0.05$ s. The continuous-time integral and derivative therefore have to be approximated. Using the backward-Euler rule for the integral and a first-order backward difference for the derivative, the PID law in @eqt:eq_pid_cont becomes
+$ I[k] = I[k-1] + e[k] T_s $ <eq_pid_int>
+$ D[k] = (e[k] - e[k-1])/T_s $ <eq_pid_der>
+$ u[k] = K_p e[k] + K_i I[k] + K_d D[k] $ <eq_pid_disc>
 
-The discrete formulation introduces two practical issues that have to be addressed in the implementation. The first one is _integral wind-up_. When the steering command saturates at the physical limit of the actuator, the integral term keeps growing as long as the lateral error does not change sign. Once the vehicle finally crosses the centre of the lane, the controller has to "discharge" this accumulated integral before it can produce a counter-steering action, which leads to a long undershoot. The simplest remedy, used in the implementation, is to clamp $I[k]$ to a symmetric interval $[-I_max, +I_max]$ at every step.
+In the actual implementation, the integral and the derivative are not stored as scalar variables but as the running sum and the first difference of a fixed-length deque of the most recent error samples. This windowed formulation provides a built-in saturation of the integral term—the deque contains at most ten samples in the present implementation—and it makes the derivative term less sensitive to high-frequency noise on the error signal.
 
-The second issue is _output saturation_ proper. The CARLA `VehicleControl.steer` field accepts values in $[-1, +1]$, with $-1$ corresponding to a fully left and $+1$ to a fully right steering wheel. Any control law must therefore saturate its output to this range; in the implementation the same saturation is applied symmetrically with $u_max = 1.0$.
+=== Anti-Windup and Saturation
+Two practical issues must be addressed in any discrete realisation of @eqt:eq_pid_disc. The first is _integral wind-up_: when the steering command saturates at the physical limit of the actuator, the integral term keeps growing as long as the lateral error does not change sign. Once the vehicle finally crosses the centre of the lane, the controller has to "discharge" this accumulated integral before it can produce a counter-steering action, which leads to a long undershoot. The simplest remedy, used in all three architectures of the present work, is to clamp the integral to a symmetric interval $[-I_max, +I_max]$ at every step.
 
-=== Choice of the Sampling Period
-The choice $T_s = 0.05$ s deserves a comment. From the point of view of stability of the discrete-time PID, $T_s$ should be at least one order of magnitude smaller than the dominant time constant of the closed-loop system. For a passenger car at moderate speed the lateral dynamics has a time constant in the order of half a second, so any $T_s$ below $50$ ms is acceptable. From the point of view of the simulator, smaller steps inflate the wall-clock time of an experiment without producing additional information, since the world geometry and the traffic do not change appreciably below $T_s = 0.02$ s. The choice of $20$ Hz is therefore a good compromise between accuracy and runtime.
+The second issue is _output saturation_ proper. The CARLA `VehicleControl.steer` field accepts values in $[-1, +1]$, with $-1$ corresponding to a fully left and $+1$ to a fully right steering wheel. Any control law must therefore saturate its output to this range; in the implementation, the maximum value is set to $0.8$, slightly below the physical limit, in order to leave a margin for transient overshoots—a choice that matches the default of the CARLA reference local planner @local_planner.
 
-== Lane-Shift Estimation from Waypoints
-The PID law described in the previous section assumes that the lateral error $e[k]$ is available at every step. In a perception-based pipeline this signal would be reconstructed from the camera image by detecting the lane markings; in the present implementation it is computed from the waypoint graph that the CARLA map exposes through its Python API. The choice of using waypoints rather than image processing is a deliberate one: it isolates the lateral controller from the perception layer, so that the closed-loop behaviour can be studied independently from the limitations of any specific lane-detection algorithm.
+A third, more subtle issue is the _rate of change_ of the steering command. A PID controller is intrinsically a memoryless operator on the error sequence and can produce arbitrarily large jumps between consecutive samples, especially if the derivative term is large. Such jumps would be felt by the vehicle as a step on the steering rack and would excite high-frequency suspension dynamics. To avoid this, the steering command is rate-limited at every tick to a maximum increment of $0.1$ per step, which corresponds approximately to a $50 degree"/s"$ steering-wheel speed at the saturation level—well within the capabilities of a human driver, and well below the bandwidth at which the simulator becomes numerically unstable.
 
-=== The CARLA Waypoint Graph
-A CARLA map is internally represented as a directed graph whose nodes are _waypoints_. Each waypoint sits exactly on the centre line of a lane and stores the local pose of that lane, including the position $(x_w, y_w, z_w)$, a forward unit vector $hat(t) = (t_x, t_y)$ tangent to the lane in the direction of legal traffic flow, and a number of metadata fields (lane width, lane change permissions, junction flags). For a vehicle at world position $(x_v, y_v)$, the call
+== Cross-Track Error Formulation <sec_xtrack>
+The first of the three architectures closes the loop on the _cross-track error_ $e_y$, defined as the signed perpendicular distance between the vehicle and the closest waypoint on the reference path. The CARLA waypoint graph exposes, at every position of the world, the closest waypoint together with the unit forward vector $hat(t) = (t_x, t_y)$ tangent to the lane. Given the vehicle position $P_v = (x_v, y_v)$ and the closest waypoint $P_w = (x_w, y_w)$, the cross-track error is the projection of the displacement $arrow(r) = P_w - P_v$ on the unit normal $hat(n) = (-t_y, t_x)$:
+$ e_y = arrow(r) dot hat(n) = (x_w - x_v) (-t_y) + (y_w - y_v) t_x $
+which, after rearrangement of the signs and division by the norm of $hat(t)$ in case the forward vector returned by the API is not exactly normalised, becomes
+$ e_y = ((x_w - x_v) t_y - (y_w - y_v) t_x) / sqrt(t_x^2 + t_y^2) $ <eq_lane_shift>
 
-#raw("waypoint = world.get_map().get_waypoint(vehicle.get_transform().location)", lang: "python", block: true)
+The geometric construction has been illustrated in @lane_shift_geom and is not repeated here.
 
-returns the closest waypoint on the closest drivable lane. This is the primitive that the data-gathering routine `carla_data_collector_2`, defined in the previous chapter, uses to record a reference trajectory: at every tick of the autonomous-driving session, the position of the closest waypoint and its forward vector are written to the `.csv` file. The full content of the resulting file is therefore a discrete sampling of the centre line of the lane along the recorded path, expressed in the same map coordinate frame as the vehicle pose.
+#figure(image("image/lane_shift_geometry.jpeg"), caption: [Geometric definition of the cross-track error $e_y$ as the signed perpendicular distance between the vehicle position $P_v$ and the line through the closest waypoint $P_w$ in the direction of the lane forward vector $hat(t)$. Positive values of $e_y$ correspond to the vehicle being on the right of the lane centre with respect to the direction of travel.]) <lane_shift_geom>
 
-=== Geometric Computation of the Lateral Offset
-Given a waypoint $P_w = (x_w, y_w)$ with forward unit vector $hat(t) = (t_x, t_y)$, and the current vehicle position $P_v = (x_v, y_v)$, the signed perpendicular distance from $P_v$ to the line through $P_w$ in the direction of $hat(t)$ is the lateral offset of the vehicle with respect to the centre of the lane at that point. Denoting by $arrow(r) = P_w - P_v = (x_w - x_v, y_w - y_v)$ the position vector from the car to the waypoint, the offset is the scalar projection of $arrow(r)$ on the unit normal $hat(n) = (-t_y, t_x)$:
-$ d = arrow(r) dot hat(n) = -(x_w - x_v) t_y + (y_w - y_v) t_x $
+=== The Cross-Track Plant
+To derive the transfer function from the steering command to the cross-track error, three simple integrations have to be chained. Starting from the bicycle-model relation $accent(psi, dot) = v K_"steer" delta_c / L$ established in @sec_bicycle:
 
-By rearranging the signs and dividing by the norm of $hat(t)$, which protects the formula in the case where the forward vector returned by the API is not exactly normalised, the expression used in the code is recovered:
-$ "lane_shift" = ((x_w - x_v) t_y - (y_w - y_v) t_x) / sqrt(t_x^2 + t_y^2) $
+#list(
+[The yaw rate $accent(psi, dot)$ integrated once gives the heading deviation $psi$ from the path tangent.],
+[The heading deviation $psi$ multiplied by the vehicle speed $v$ gives the lateral velocity $accent(y, dot)$ relative to the path (small-angle approximation).],
+[The lateral velocity $accent(y, dot)$ integrated once gives the cross-track distance $e_y$.]
+)
 
-@lane_shift_geom illustrates the construction. The sign of the result is positive when the vehicle is on the right of the lane centre, with respect to the direction of the forward vector $hat(t)$, and negative when it is on the left; a sign convention that the PID controller can interpret directly as "steer right" versus "steer left".
+In the Laplace domain, the chain of operations is
+$ E_y(s) / Delta_c(s) = (v K_"steer") / L  dot  1/s  dot  v  dot  1/s  =  (v^2 K_"steer") / (L s^2) $ <eq_xtrack_plant>
 
-#figure(image("image/lane_shift_geometry.jpeg"), caption: [Geometric definition of the lane shift $d$ as the signed perpendicular distance between the vehicle position $P_v$ and the line through the closest waypoint $P_w$ in the direction of the lane forward vector $hat(t)$.]) <lane_shift_geom>
+The plant from the steering command to the cross-track error is therefore a _double integrator_, with a DC gain that scales with $v^2$. This is the central observation that drives every other property of the cross-track formulation. A double integrator is marginally stable on its own—it has two poles at the origin—and any feedback law that uses only the proportional and integral terms produces a closed-loop system with poles either on the imaginary axis or in the right half-plane. The derivative term is therefore _necessary_ for stability, not optional. Furthermore, the $v^2$ scaling of the DC gain means that, in order to keep the closed-loop bandwidth constant as the vehicle accelerates, all three PID gains have to be re-scaled by $1/v^2$. This is a steep dependence that will be revisited in @sec_sysid.
 
-=== Look-Ahead Search Strategy
-The reference `.csv` file contains several thousand waypoints, while the vehicle only moves a few metres per tick. Recomputing the closest waypoint by an exhaustive search at every step would therefore be wasteful and, more importantly, would expose the controller to ambiguities on closed circuits, where two waypoints may be geometrically close but topologically distant. The implementation uses instead a _local_ search anchored at the index reached at the previous step. The corresponding routine, `lane_shift_calculator`, is reported below.
+=== Pole Placement
+A natural choice for the closed-loop denominator of a PID compensating a double integrator is a triple real pole at $s = -omega_n$, which gives a critically damped behaviour with bandwidth $omega_n$. The closed-loop characteristic polynomial of $K_p + K_i / s + K_d s$ acting on $K_"lat" / s^2$ with $K_"lat" = v^2 K_"steer" / L$ is
+$ s^3 + (K_"lat" K_d) s^2 + (K_"lat" K_p) s + K_"lat" K_i $
+Matching with $(s + omega_n)^3 = s^3 + 3 omega_n s^2 + 3 omega_n^2 s + omega_n^3$ yields the analytical gains
+$ K_p = (3 omega_n^2)/K_"lat", quad K_i = (omega_n^3)/K_"lat", quad K_d = (3 omega_n)/K_"lat" $ <eq_xtrack_gains>
 
-#raw("index = 0
-def lane_shift_calculator(vehicle: carla.Vehicle, data: pd.DataFrame):
-    global index
+These expressions tell, at a glance, how each gain depends on the vehicle speed: $K_d$ scales as $1/v^2$ through $K_"lat"$, $K_p$ does the same, and $K_i$—the most "expensive" gain in terms of stability margin—decreases as $v^{-2}$ as well. The tuning script `pid_tuning.py` implements exactly @eqt:eq_xtrack_gains and produces, given a measurement of $K_"steer"$ from the system identification of @sec_sysid, the numerical gains that have been used in the simulator.
 
-    vehicle_location = vehicle.get_transform().location
-    car_x, car_y = vehicle_location.x, vehicle_location.y
+== Heading-Error Formulation <sec_heading>
+The second architecture replaces the cross-track distance with a different scalar error signal: the angle between the vehicle's forward direction and the line connecting the vehicle to a _look-ahead point_ placed on the reference path at a speed-dependent distance $L_d$ ahead of the vehicle. This formulation is closely related to the Pure Pursuit @snider2009automatic and Stanley @7795743 geometric trackers, with the difference that here the steering command is computed by a feedback PID rather than by a fixed geometric formula. The geometric construction is illustrated in @heading_geom.
 
-    nearest = float('inf')
-    nearest_index = index
+#figure(image("image/heading_error_geometry.jpeg"), caption: [Heading-error / look-ahead geometry. The look-ahead point $P_"la"$ is the closest waypoint on the reference path at distance at least $L_d$ ahead of the vehicle; the heading error $alpha$ is the signed angle between the vehicle forward unit vector $hat(f)_v$ and the line $P_v -> P_"la"$. The look-ahead distance is scheduled as $L_d = L_d^"min" + k_L  v(t)$.]) <heading_geom>
 
-    future_horizon = 3
-    for i in range(future_horizon + 1):
-        idx = index + i
-        if idx >= len(data):
-            break
-        wp_x = data.iloc[idx][\"waypoint_x\"]
-        wp_y = data.iloc[idx][\"waypoint_y\"]
-        distance = np.sqrt((car_x - wp_x)**2 + (car_y - wp_y)**2)
-        if distance < nearest:
-            nearest = distance
-            nearest_index = idx
+Formally, given the vehicle position $P_v = (x_v, y_v)$, its forward unit vector $hat(f)_v = (f_x, f_y)$, and the look-ahead point $P_"la" = (x_l, y_l)$, the heading error $alpha$ is computed from the dot product and the cross product of $hat(f)_v$ with the displacement $arrow(d) = P_"la" - P_v$:
+$ alpha = "atan2"(hat(f)_v times arrow(d),  hat(f)_v dot arrow(d)) $
+The two-argument arctangent returns a signed angle in $(-pi, +pi]$ and naturally handles all four quadrants. By convention—the same one used in the CARLA `agents.navigation.controller.PIDLateralController` and matched in the implementation—a positive $alpha$ corresponds to a target on the right of the vehicle, which calls for a positive (right) steering command.
 
-    index = nearest_index
-    vector_x = data.iloc[nearest_index][\"vector_x\"]
-    vector_y = data.iloc[nearest_index][\"vector_y\"]
-    wp_x = data.iloc[nearest_index][\"waypoint_x\"]
-    wp_y = data.iloc[nearest_index][\"waypoint_y\"]
-    lane_shift = ((wp_x - car_x) * vector_y - (wp_y - car_y) * vector_x) \\
-                  / np.sqrt(vector_x**2 + vector_y**2)
-    return lane_shift", lang: "python", block: true)
+=== The Heading-Error Plant
+Compared with the cross-track formulation, the heading-error plant has _one fewer integration_. Starting again from $accent(psi, dot) = v K_"steer" delta_c / L$, only one step is needed to obtain the heading deviation $alpha$ relative to the look-ahead point. The look-ahead point is, by construction, ahead of the vehicle on the path; if the path is locally straight, the line to the look-ahead point is parallel to the path tangent, and the heading error reduces to the angle between the vehicle's forward vector and the path tangent. In the Laplace domain,
+$ A(s) / Delta_c(s) = (v K_"steer")/(L) dot 1/s = (v K_"steer") / (L s) $ <eq_heading_plant>
+which is a _single integrator_ with a DC gain that scales linearly with $v$, not with $v^2$.
 
-Two design choices are worth highlighting. First, the search horizon `future_horizon = 3` only inspects the current waypoint and the next three. This window is wide enough to absorb the few centimetres that the vehicle covers in one tick at the speeds used during the experiments, but narrow enough to remain $O(1)$ in the length of the reference path. Second, the search index is updated _monotonically_: once the nearest waypoint has moved forward in the file, it is never allowed to move backward. This convention prevents the controller from "snapping" to a previous lap on a closed circuit, but it also means that the function must be re-initialised when a new reference trajectory is loaded.
+The structural difference between @eqt:eq_xtrack_plant and @eqt:eq_heading_plant is the single most important property of the present chapter, because it has three direct consequences:
 
-When the local search reaches the end of the file (`idx >= len(data)`), the loop is broken and the last valid index is reused. In a production-quality version of the controller this condition would trigger a graceful disengagement of the LKA function; in the present implementation, it simply causes the lateral error to remain frozen at the last available waypoint, which is acceptable as long as the recorded trajectory is longer than the experiment.
+#list(
+[A PI controller is sufficient for closed-loop stability. The derivative term is no longer necessary—the plant has only one free integrator—and is included only if the error signal is noisy enough to require derivative filtering.],
+[The gains scale as $1/v$ instead of $1/v^2$. Gain scheduling across the operating speed range is therefore much gentler.],
+[The closed-loop bandwidth that the controller can achieve at fixed gains is higher, because each additional integrator in the plant adds $90 degree$ of phase lag and reduces the available phase margin.]
+)
 
-== PID Controller Implementation <sec_pid_impl>
-The discrete-time PID law of the previous section is implemented as a stateful function that holds the integral and the previous error in module-level variables. The full implementation is reported below.
+The plant comparison is summarised in @plant_block, which puts the two transfer functions side by side and makes the role of the look-ahead point explicit: by closing the loop on the angle to a point on the path rather than on the perpendicular distance to it, the controller "consumes" one of the two integrators that the cross-track formulation has to handle.
 
-#raw("integral = 0.0
-prev_error = 0.0
-I_max = 1.0
-u_max = 1.0
+#figure(image("image/plant_comparison.jpeg"), caption: [Block-diagram comparison of the cross-track and heading-error plants. The cross-track formulation contains two integrators—yaw rate to heading, and lateral velocity to cross-track distance—while the heading-error formulation contains only one. The reduction in plant order is the reason why a PI controller is sufficient for the heading-error case, while a full PID is required for the cross-track case.]) <plant_block>
 
-def pid_controller(lane_shift, Kp=1.0, Ki=0.0, Kd=0.0):
-    global integral, prev_error, I_max, u_max
+=== Pole Placement
+With the plant given by @eqt:eq_heading_plant and a PI controller $C(s) = K_p + K_i / s$, the closed-loop characteristic polynomial reads
+$ s^2 + K_"lat" K_p s + K_"lat" K_i, quad K_"lat" = v K_"steer" / L $
+Matching with $s^2 + 2 zeta omega_n s + omega_n^2$ and choosing the critical damping $zeta = 1$ yields
+$ K_p = (2 omega_n)/K_"lat", quad K_i = (omega_n^2)/K_"lat" $ <eq_heading_gains>
 
-    dt = 0.05  # 50 ms
+Both gains scale as $1/v$ through $K_"lat"$. The asymptotic comparison with the cross-track formulation is best read graphically: @analytic_cmp shows, in the bottom-right panel, the proportional gain $K_p$ as a function of vehicle speed for the two formulations, normalised so that the value at $30$ km/h is unity. The cross-track curve falls by an order of magnitude when the speed grows from $30$ to $120$ km/h, while the heading-error curve only falls by a factor of four. The practical consequence is that the same heading-error PI controller can be safely operated, with at most a mild gain re-scheduling, across the entire highway-speed range; the cross-track PID, in contrast, is much more sensitive to speed mismatches and would oscillate or diverge if used outside the range it has been tuned for.
 
-    # Integral with anti-windup clamp
-    integral += lane_shift * dt
-    integral = max(min(integral, I_max), -I_max)
+=== Look-Ahead Distance Scheduling
+The look-ahead point introduces a single design parameter, the look-ahead distance $L_d$. A short $L_d$ produces a controller that reacts strongly to local geometry and that is well-behaved on tight turns but easily destabilised at high speed; a long $L_d$ produces a smooth controller that filters out high-frequency disturbances on the reference path but cuts corners on tight turns. The compromise that is most often adopted in the literature on Pure Pursuit—and that has been retained in the present implementation—is to schedule $L_d$ linearly with the speed of the vehicle:
+$ L_d(v) = L_d^"min" + k_L v $
+with a minimum $L_d^"min" = 4$ m that protects against pathological behaviour at standstill, and a slope $k_L = 0.6$ s that produces $L_d approx 9$ m at the nominal cruise speed of $30$ km/h. The same kind of linear scheduling is used by the CARLA reference local planner @local_planner for its waypoint-popping criterion, with comparable numerical values.
 
-    # Backward-difference derivative
-    derivative = (lane_shift - prev_error) / dt
+=== Heading-Error Filtering
+A practical consideration that is specific to the heading-error formulation is the noise on the error signal. The look-ahead point is selected from a discrete sampling of the reference path, so the heading error is intrinsically a piecewise-constant signal that exhibits small jumps every time the look-ahead point advances by one waypoint. These jumps are amplified by the derivative term and would produce visible jitter on the steering command. In the implementation, the heading error is therefore low-pass filtered with a first-order infinite impulse response filter of pole $alpha_H$:
+$ accent(alpha, tilde)[k] = alpha_H alpha[k] + (1 - alpha_H) accent(alpha, tilde)[k-1] $
+with $alpha_H = 0.4$, which corresponds to a cut-off frequency of approximately $2$ Hz at the simulator rate of $20$ Hz. This is well below the Nyquist frequency of the controller and well above the bandwidth of the closed loop, so it removes the per-sample jitter without affecting the dynamic response of the system.
 
-    # PID combination
-    u = Kp * lane_shift + Ki * integral + Kd * derivative
+== System Identification and Analytical Tuning <sec_sysid>
+The pole-placement formulas @eqt:eq_xtrack_gains and @eqt:eq_heading_gains express the PID gains in terms of two physical parameters: the wheelbase $L$, which is read from the vehicle blueprint through the CARLA Python API, and the steering gain $K_"steer"$, which depends on the specific vehicle model and is not exposed by the API. The latter has to be measured experimentally. In addition, the longitudinal channel of the LKA function—the speed regulator that maintains the cruise speed—has its own parameters that have to be identified.
 
-    # Output saturation to the CARLA steer range
-    u = max(min(u, u_max), -u_max)
+The identification procedure has been implemented in the standalone script `carla_sysid.py`; it consists of two open-loop step experiments that are recorded with the simulator in synchronous mode at $T_s = 0.05$ s.
 
-    prev_error = lane_shift
-    return u", lang: "python", block: true)
+=== Longitudinal Step Experiment
+The first experiment fits the parameters of a first-order longitudinal model. With the vehicle initially at rest on a long straight road, the throttle is stepped from zero to a fixed value $u_"step" = 0.5$ and held for ten seconds. The resulting speed trajectory $v(t)$ is recorded and fitted, by nonlinear least squares, to the first-order step response
+$ v(t) = K u_"step" (1 - e^{-t / tau}) $
+where $K$ is the DC gain (in km/h per unit of throttle) and $tau$ is the time constant of the longitudinal dynamics. The model is sufficient because at the moderate accelerations encountered during the experiments, the dominant non-linearity of the powertrain—the throttle-to-torque map—is approximately linear, and the slower aerodynamic drag becomes important only above $80$ km/h.
 
-The function is purposely kept short, but a few details are worth a comment.
-
-*State variables.* The integral and the previous error are stored at module level rather than as attributes of an object. This is sufficient for a single-vehicle controller and makes the function easy to call from the main loop, but it also means that the controller cannot be instantiated twice in the same process without explicit reset. A future refactor could wrap the same logic in a class to remove this limitation.
-
-*Sampling time.* The constant `dt = 0.05` is duplicated with the `fixed_delta_seconds` setting of the simulator. Keeping a single source of truth would prevent the two values from drifting if the simulation rate is ever changed; in the current code base, this synchronisation is enforced by convention rather than by construction.
-
-*Anti-windup.* The clamping of the integral to $[-I_max, +I_max]$ implements the simplest form of anti-windup. More sophisticated schemes—for instance the back-calculation method, in which the difference between the saturated and the unsaturated control action is fed back into the integrator—were not necessary at the speeds used in the experiments, where the steering command rarely saturates.
-
-*Default gains.* The default values $K_p = 1.0$, $K_i = 0.0$, $K_d = 0.0$ correspond to a pure proportional controller, which is a safe starting point for tuning. The values used at the call site of the main loop, $K_p = 1.0$, $K_i = 0.01$, $K_d = 0.1$, were obtained by manual tuning on a straight section of the recorded trajectory and then refined on the curved sections; their robustness across different scenarios is a topic for the experimental chapter.
-
-== Vehicle and Sensor Initialisation
-The control loop relies on three actors that are spawned before the simulation starts: a fleet of background vehicles that populate the map, the ego vehicle that is controlled by the LKA function, and an RGB camera that is attached to the ego vehicle and provides the visual feedback for the operator.
-
-=== Background Traffic
-The background traffic is generated by sampling the available spawn points of the map and placing a randomly chosen vehicle blueprint at each of them. To keep the population realistic, the blueprint library is filtered down to a list of consumer-grade models:
-
-#raw("models = ['dodge', 'audi', 'model3', 'mini', 'mustang', 'lincoln',
-          'prius', 'nissan', 'crown', 'impala']
-blueprints = []
-for vehicle in world.get_blueprint_library().filter('*vehicle*'):
-    if any(model in vehicle.id for model in models):
-        blueprints.append(vehicle)
-
-max_vehicles = min(50, len(spawn_points))
-vehicles = []
-for spawn_point in random.sample(spawn_points, max_vehicles):
-    actor = world.try_spawn_actor(random.choice(blueprints), spawn_point)
-    if actor is not None:
-        vehicles.append(actor)
-
-for vehicle in vehicles:
-    vehicle.set_autopilot(True)
-    traffic_manager.ignore_lights_percentage(vehicle, random.randint(0, 50))", lang: "python", block: true)
-
-Two safety measures are embedded in this code. The use of `try_spawn_actor` rather than `spawn_actor` prevents the program from raising an exception when two spawn points are too close to each other; if the collision check of the simulator fails, the corresponding slot is silently skipped. The cap at `max_vehicles = 50` prevents the population from outgrowing the number of available spawn points on smaller maps. Finally, after each vehicle is spawned, the Traffic Manager is asked to occasionally ignore traffic lights, which adds a controlled amount of irregularity to the scenario.
-
-=== The Ego Vehicle and the Camera
-The ego vehicle is then chosen at random among the vehicles that were successfully spawned. An RGB camera is attached to it through `world.spawn_actor`, with a `Rigid` attachment so that the camera follows the body of the vehicle without any compliance:
-
-#raw("ego_vehicle = random.choice(vehicles)
-
-bound_x = 0.5 + ego_vehicle.bounding_box.extent.x
-bound_y = 0.5 + ego_vehicle.bounding_box.extent.y
-bound_z = 0.5 + ego_vehicle.bounding_box.extent.z
-
-camera_init_trans = carla.Transform(carla.Location(x=+0.8*bound_x,
-                                                   y=+0.0*bound_y,
-                                                   z=+1.3*bound_z))
-camera_bp = world.get_blueprint_library().find('sensor.camera.rgb')
-camera_bp.set_attribute(\"image_size_x\", \"1280\")
-camera_bp.set_attribute(\"image_size_y\", \"720\")
-camera = world.spawn_actor(camera_bp, camera_init_trans,
-                           attach_to=ego_vehicle,
-                           attachment_type=carla.AttachmentType.Rigid)
-camera.listen(lambda image: pygame_callback(image, renderObject))", lang: "python", block: true)
-
-The camera transform is expressed as multiples of the half-extent of the vehicle bounding box, so that the same code adapts automatically to vehicles of different size. With $0.8 b_x$ along the longitudinal axis and $1.3 b_z$ along the vertical, the camera is mounted approximately at the position of the rear-view mirror, looking forward—a placement that mimics a windshield-mounted ADAS camera.
-
-The image stream is consumed by `pygame_callback`, a small function whose only responsibility is to reshape the raw byte array delivered by CARLA into a $H times W times 3$ RGB array and to convert it into a PyGame surface that can be blitted on the screen. The reshape order is dictated by the BGRA layout used internally by the simulator; the slicing `[:, :, ::-1]` swaps the colour channels and the slice `[:, :, :3]` discards the alpha channel.
-
-#raw("def pygame_callback(data, obj):
-    img = np.reshape(np.copy(data.raw_data), (data.height, data.width, 4))
-    img = img[:, :, :3]
-    img = img[:, :, ::-1]
-    obj.surface = pygame.surfarray.make_surface(img.swapaxes(0, 1))", lang: "python", block: true)
-
-In this implementation the camera is used only as a visual feedback device for the human operator. The lateral controller does not consume the camera frames. This separation is deliberate, as discussed in the introduction of @ch3, and it is what makes the architecture _open_ to a future perception-based extension: a lane-detection block can be inserted between the camera callback and the controller without modifying any of the surrounding code.
-
-== Manual Driver Override
-A Lane Keeping Assist function is, by definition, a driver-assistance system: the driver must be able to take control of the vehicle at any moment. In the implementation this requirement is realised by a `ControlObject` class that stores the desired throttle, brake and steering values and applies them to the vehicle through a single `apply_control` call.
-
-#raw("class ControlObject(object):
-    def __init__(self, veh):
-        self._vehicle = veh
-        self._steer = 0
-        self._throttle = False
-        self._brake = False
-        self._steer_cache = 0
-        self._control = carla.VehicleControl()
-
-    def parse_control(self, event):
-        if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_RETURN: self._vehicle.set_autopilot(False)
-            if event.key == pygame.K_UP:     self._throttle = True
-            if event.key == pygame.K_DOWN:   self._brake = True
-            if event.key == pygame.K_RIGHT:  self._steer = 1
-            if event.key == pygame.K_LEFT:   self._steer = -1
-        if event.type == pygame.KEYUP:
-            if event.key == pygame.K_UP:    self._throttle = False
-            if event.key == pygame.K_DOWN:  self._brake = False
-            if event.key in (pygame.K_LEFT, pygame.K_RIGHT): self._steer = None", lang: "python", block: true)
-
-The class follows a two-step design that is common in PyGame applications. The `parse_control` method is called for every keyboard event and only updates the internal flags; the heavier `process_control` method is called once per simulation tick and turns those flags into actual `VehicleControl` values. This separation prevents the simulator from receiving a burst of nearly identical commands when the user holds a key down, and produces a smoother steering response by applying small, time-integrated increments to the steering value:
-
-#raw("    def process_control(self):
-        # Throttle / brake combinations
-        if self._throttle:
-            self._control.throttle = min(self._control.throttle + 0.01, 1)
-            self._control.gear = 1
-            self._control.brake = False
-        elif not self._brake:
-            self._control.throttle = 0.0
-        if self._brake:
-            if self._vehicle.get_velocity().length() < 0.01 and not self._control.reverse:
-                self._control.brake = 0.0
-                self._control.gear = 1
-                self._control.reverse = True
-                self._control.throttle = min(self._control.throttle + 0.1, 1)
-            elif self._control.reverse:
-                self._control.throttle = min(self._control.throttle + 0.1, 1)
-            else:
-                self._control.throttle = 0.0
-                self._control.brake = min(self._control.brake + 0.3, 1)
-        else:
-            self._control.brake = 0.0
-
-        # Steering with low-pass return-to-centre
-        if self._steer is not None:
-            self._steer_cache += 0.03 * self._steer
-            self._steer_cache = max(-0.7, min(0.7, self._steer_cache))
-            self._control.steer = round(self._steer_cache, 1)
-        else:
-            self._steer_cache *= 0.2
-            if abs(self._steer_cache) < 0.01:
-                self._steer_cache = 0.0
-            self._control.steer = round(self._steer_cache, 1)
-
-        self._vehicle.apply_control(self._control)", lang: "python", block: true)
-
-Three behaviours emerge from the code. First, when the user presses the up arrow, the throttle is _ramped_ from the current value towards the maximum at a rate of $0.01$ per tick, instead of being instantaneously applied. This produces the same kind of progressive acceleration that one would expect from a real pedal. Second, when the user presses the down arrow at low speed, the gear is automatically switched to reverse and the throttle is applied in the opposite direction, so that a single key controls both braking and reverse driving. Third, when no steering key is pressed, the steering cache is multiplied by $0.2$ at every tick, which produces a smooth return of the wheel to the centre position over a few ticks. This emulates the self-aligning torque of a real steering rack and avoids the on/off behaviour that would result from a binary key state.
-
-The `K_RETURN` key disengages the autopilot through `vehicle.set_autopilot(False)`. After this point, all the commands sent by the LKA function and by the manual override are accepted by the vehicle, and the driver can resume manual control by simply pressing the directional keys. A `K_TAB` event, handled in the main loop, switches the ego vehicle to a different actor in the fleet, re-spawning the camera in the process; this is convenient during debugging because it allows the operator to inspect the scenario from several points of view without restarting the simulation.
-
-== The Main Control Loop
-All the building blocks introduced above are assembled in a single loop that is the hot path of the program. A condensed view of the loop is given below; comments mark the position of each functional block.
-
-#raw("data = pd.read_csv(\"carla_data.csv\", index_col=0)
-
-crashed = False
-while not crashed:
-    # 1. Advance the synchronous simulation
-    world.tick()
-
-    # 2. Compute the lateral offset and the steering command
-    lane_shift = lane_shift_calculator(ego_vehicle, data)
-    steer = pid_controller(lane_shift, Kp=1.0, Ki=0.01, Kd=0.1)
-
-    # 3. Render the camera frame
-    gameDisplay.blit(renderObject.surface, (0, 0))
-    pygame.display.flip()
-
-    # 4. Apply the manual override (and possibly overwrite step 2)
-    controlObject.process_control()
-
-    # 5. Process keyboard events
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            crashed = True
-        controlObject.parse_control(event)
-        if event.type == pygame.KEYUP and event.key == pygame.K_TAB:
-            ego_vehicle.set_autopilot(True)
-            ego_vehicle = random.choice(vehicles)
-            if ego_vehicle.is_alive:
-                camera.stop(); camera.destroy()
-                controlObject = ControlObject(ego_vehicle)
-                camera = world.spawn_actor(camera_bp, camera_init_trans,
-                                           attach_to=ego_vehicle)
-                camera.listen(lambda image: pygame_callback(image, renderObject))", lang: "python", block: true)
-
-The order of the five blocks is not arbitrary. The simulation is advanced first, so that all the state queries that follow are consistent with the same world snapshot. The lateral offset and the steering command are computed second, before any rendering or event handling, in order to minimise the latency between the measurement of the vehicle pose and the application of the corresponding command. The rendering is performed third; because PyGame uses double buffering, the call to `pygame.display.flip()` actually shows the frame produced at the _previous_ tick, which is acceptable as long as the operator does not need pixel-accurate feedback. The manual override is applied fourth, so that any keyboard event from the previous tick is honoured before the next tick of the simulator. Finally, the keyboard events are collected and parsed at the end of the loop, in preparation for the next iteration.
-
-A subtle point concerns the interaction between the LKA controller and the manual override. In the current implementation, the value computed by `pid_controller` is _not_ written into the `controlObject._control.steer` field; the function returns the value but the loop does not propagate it. This is intentional: the LKA function is intended to be used in two distinct modes, an instrumentation mode in which the steering command is logged for offline analysis, and a closed-loop mode in which the same value is applied to the vehicle. Switching between the two modes is then a matter of adding or removing a single line at the end of step 2, without modifying any of the surrounding code.
-
-== Reference: CARLA's Built-in Local Planner
-The CARLA project ships, as part of its `agents.navigation` module, a reference implementation of a waypoint-following local planner. The relevant source file, `local_planner.py`, was used during the development of this thesis as a comparison point, and a number of design decisions in the controller described above were informed by the corresponding choices in the framework. A short overview of the reference module is therefore given here.
-
-The `LocalPlanner` class wraps a `VehiclePIDController`, instantiates two PID controllers—one for the lateral channel and one for the longitudinal one—and consumes a queue of `(carla.Waypoint, RoadOption)` pairs. At every step, the planner pops obsolete waypoints from the front of the queue, requests the controller to track the next active waypoint, and refills the queue from the topology of the map when its length falls below a threshold. The default configuration uses
-
-#raw("self._dt = 1.0 / 20.0
-self._target_speed = 20.0  # km/h
-self._sampling_radius = 2.0
-self._args_lateral_dict = {'K_P': 1.95, 'K_I': 0.05, 'K_D': 0.2, 'dt': self._dt}
-self._args_longitudinal_dict = {'K_P': 1.0, 'K_I': 0.05, 'K_D': 0.0, 'dt': self._dt}
-self._max_throt = 0.75
-self._max_brake = 0.30
-self._max_steer = 0.80
-self._base_min_distance = 3.0
-self._distance_ratio = 0.5", lang: "python", block: true)
-
-Three design choices in the reference are worth highlighting. First, the sampling rate is also $T_s = 0.05$ s, which is the value adopted in the present work. Second, the lateral PID is significantly more aggressive than the default configuration of `pid_controller`, with $K_p approx 2$ and a non-zero integral gain; this is consistent with the fact that the reference planner has to handle generic trajectories produced by the global planner, including sharp turns, while the controller of this thesis focuses on lane keeping and is tuned on a comparatively smooth reference. Third, the maximum steering value is capped at $0.80$, slightly below the physical limit of $1.0$, in order to leave a margin for transient overshoots. The same cap could be added to the implementation of @sec_pid_impl by setting `u_max = 0.80` at the module level.
-
-The waypoint-management strategy is also different. The reference planner uses a `deque` of fixed maximum length and a distance threshold that grows linearly with the speed of the vehicle:
-
-#raw("self._min_distance = self._base_min_distance + self._distance_ratio * vehicle_speed", lang: "python", block: true)
-
-so that a fast-moving vehicle pops waypoints earlier than a slow-moving one. This is more sophisticated than the constant `future_horizon = 3` used in `lane_shift_calculator` and would be a natural extension of the controller; replacing the fixed horizon with a speed-dependent one is the kind of incremental improvement that the modular structure of the implementation is meant to support.
-
-Finally, when the local planner reaches an intersection where multiple successor waypoints are available, the reference module disambiguates them through the `_retrieve_options` helper, which classifies each option as `STRAIGHT`, `LEFT` or `RIGHT` based on the yaw difference with the current waypoint and a $35°$ threshold:
-
-#raw("def _compute_connection(current_waypoint, next_waypoint, threshold=35):
-    n = next_waypoint.transform.rotation.yaw % 360.0
-    c = current_waypoint.transform.rotation.yaw % 360.0
-    diff_angle = (n - c) % 180.0
-    if diff_angle < threshold or diff_angle > (180 - threshold):
-        return RoadOption.STRAIGHT
-    elif diff_angle > 90.0:
-        return RoadOption.LEFT
-    else:
-        return RoadOption.RIGHT", lang: "python", block: true)
-
-The corresponding `RoadOption` enum is then attached to each waypoint in the queue and exposed to higher layers, which can use it to take routing decisions. The controller of this thesis does not rely on this mechanism because the reference trajectory is recorded once at design time, but the same `RoadOption` would be required if the controller were to be combined with a global planner.
-
-In summary, the proposed implementation reuses the same overall architecture as the CARLA reference local planner—synchronous mode, $20$ Hz PID, waypoint-based reference—but reduces it to the minimum amount of code that is necessary for the lane keeping function. This makes the controller easier to read and to modify, at the price of a less sophisticated waypoint management. The next chapter will quantify the consequences of this trade-off through a series of closed-loop experiments.
+=== Lateral Step Experiment
+The second experiment identifies the steering gain $K_"steer"$. The vehicle is settled at a constant speed $V = 30$ km/h with a simple proportional speed regulator, and a small steering step $delta_c = 0.05$ is applied for $2.5$ s. The yaw rate of the vehicle is recorded directly from the `get_angular_velocity` getter of the CARLA Python API. The steady-state yaw rate $accent(psi, dot)_"ss"$ obtained by averaging the last $25%$ of the trace is then matched against the bicycle-model prediction $accent(psi, dot)_"ss" = (V / L) K_"steer" delta_c$, giving
+$ K_"steer" = (accent(psi, dot)_"ss" L) / (V delta_c) $
+
+The duration of the lateral step is kept deliberately short, because once the vehicle starts to drift laterally the cross-track error grows quickly and the small-angle assumptions of the bicycle model are no longer satisfied.
+
+=== Analytical Plot Comparison
+With $L$ and $K_"steer"$ identified, the analytical gains of @eqt:eq_xtrack_gains and @eqt:eq_heading_gains can be evaluated and the resulting closed-loop transfer functions can be analysed without running the simulator. @analytic_cmp shows the four canonical control plots that the tuning script `pid_tuning.py` produces from the identified plant parameters: the open-loop magnitude and phase of the loop transfer $L(s) = C(s) G(s)$ for the two formulations (top row), the closed-loop step response of the reference-to-output transfer $T(s)$ (bottom-left), and the speed dependence of the proportional gain $K_p$ (bottom-right).
+
+#figure(image("image/analytical_comparison.png"), caption: [Analytical comparison of the cross-track PID and heading-error PI controllers, computed symbolically from the identified plant parameters. _Top_: open-loop magnitude and phase. _Bottom-left_: closed-loop step response. _Bottom-right_: proportional gain as a function of vehicle speed, normalised at $30$ km/h. The gentler $1/v$ scaling of the heading-error gain, compared with the $1/v^2$ scaling of the cross-track gain, is the main reason why the heading-error formulation is preferred in the operational range of an LKA function.]) <analytic_cmp>
+
+Several observations can be made from these plots. The two open-loop magnitudes coincide above $omega approx 4$ rad/s—at high frequency, both loops are dominated by the fastest pole of the controller—while at low frequency the cross-track loop has a steeper slope that reflects the additional integrator. The phase of the cross-track loop reaches $-180 degree$ around the same frequency at which the heading-error loop is still well above $-90 degree$, which translates into a smaller phase margin and a more oscillatory step response. Both controllers track a unit step, but the cross-track design exhibits a larger overshoot and a longer settling time, even though its bandwidth $omega_n$ has been deliberately set lower than that of the heading-error controller to compensate for the additional plant order.
+
+The bottom-right panel quantifies the gain-scheduling argument that has been made in @sec_heading. At $V = 120$ km/h, the proportional gain of the cross-track controller is more than ten times smaller than its value at $30$ km/h, while the same gain of the heading-error controller is only four times smaller. In a fixed-gain implementation, this means that a cross-track PID tuned at $30$ km/h is unsafe to use even at $50$ km/h, while a heading-error PI tuned at the same speed is acceptable for the entire range $20$–$60$ km/h that covers urban driving and most of the operational design domain of an LKA function.
+
+== Vision-Based Lane Reference <sec_vision>
+The third architecture removes the dependence on the pre-recorded `.csv` reference path by reconstructing the centre line of the lane at every tick from the RGB camera feed. The architecture is identical to the heading-error PI controller of @sec_heading from the controller block downward; the only modification is the way in which the look-ahead point is generated. A high-level view of the vision-based pipeline is given on the bottom row of @three_arch.
+
+=== The Lane-Detection Network
+Lane detection in road scenes has been a benchmark task in computer vision for over a decade, and the literature offers a variety of architectures with different trade-offs between accuracy, speed, and complexity. The taxonomy adopted in the recent comparative study of Lin et al. @lin2024lane covers semantic-segmentation networks (SCNN @scnn, RESA @resa), row-based classifiers (UFLD @ufld), anchor-based detectors (LaneATT @laneatt, ADNet @adnet), parametric-curve regressors (BezierLaneNet @beziernet) and the recent CLRNet @clrnet family that combines an anchor-based proposal mechanism with row-wise refinement. The implementation supports any model from this list through a pluggable registry stored in the `detection_models` dictionary; for the experiments reported in this thesis, the CLRNet model trained on the TuSimple dataset has been used, because it offers the best trade-off between latency and lane-fitting accuracy in the comparative study cited above.
+
+The detection network operates on a $1280 times 720$ frame extracted from the camera sensor and produces a list of lane lines, each represented as a sequence of pixel coordinates $(u_i, v_i)$. In the present formulation, the reference for the controller is not a single lane line but the _centre line_ of the ego-lane, which has to be reconstructed from the detected boundaries. The reconstruction is performed by the helper function `get_centerline`: only the lane lines that reach the bottom $30%$ of the image are kept—so that adjacent lanes and far-away lines are filtered out—and the closest left and right boundaries to the image centre are paired up. Their interpolated mid-points at a regular sampling along the image $v$-axis form the centre line, which is returned ordered from the closest sample to the furthest.
+
+=== Inverse Perspective Mapping
+The centre line returned by the lane-detection network is expressed in pixel coordinates and cannot be used directly by the controller, which works in the body frame of the vehicle. The conversion from pixels to a body-frame position is performed by the standard _inverse perspective mapping_ (IPM) projection, sketched in @ipm_fig.
+
+#figure(image("image/ipm_geometry.jpeg"), caption: [Inverse perspective mapping (side view). A pixel below the horizon back-projects to a unique point on the ground plane, given the camera height $h_"cam"$ and the camera intrinsics $(f_x, f_y, c_u, c_v)$. Pixels above the horizon $v <= c_v$ project to infinity and are discarded.]) <ipm_fig>
+
+Under the assumptions of a pinhole camera with zero pitch, zero roll, zero yaw, and a flat ground plane, every pixel below the horizon corresponds to a unique point on the ground plane. With the camera mounted at height $h_"cam"$ above the road, with focal lengths $f_x = f_y = w / (2 tan("FOV"/2))$ derived from the image width $w$ and the field of view, and with the principal point at $(c_u, c_v) = (w/2, h/2)$, the mapping reads
+$ X_"cam" = (h_"cam"  f_y) / (v - c_v), quad Y_"cam" = X_"cam" (u - c_u) / f_x $
+where $X_"cam"$ is the longitudinal distance ahead of the camera, in metres, and $Y_"cam"$ is the lateral distance to the right of the camera. The projection is well defined only for pixels below the horizon, that is for $v > c_v$; pixels above the horizon are discarded. A maximum range $X_"cam" <= 40$ m is also enforced, because at larger distances the small angular resolution of the pixel produces unstable lateral estimates. The constant offset of the camera with respect to the rear axle of the vehicle is taken into account by adding $0.8 b_x$ to $X_"cam"$, where $b_x$ is the half-extent of the bounding box of the vehicle.
+
+The output of the IPM block is therefore a sampling of the centre line of the lane in the body frame of the vehicle, in metres, ordered from the closest sample to the furthest. This is exactly the input that the heading-error formulation of @sec_heading expects, with the only difference that the look-ahead point is now selected on a perception-based reference rather than on a pre-recorded one.
+
+=== Polynomial Fitting and Look-Ahead Selection
+The samples of the centre line returned by the IPM block are noisy and unevenly spaced. To produce a stable look-ahead point, a low-degree polynomial $y = a_1 x + a_0$ is fitted by least squares to the samples that fall in the longitudinal interval $[0.5, 20]$ m, and the look-ahead lateral coordinate is evaluated as $y_"la" = a_1 L_d + a_0$. A first-degree polynomial—a straight line—has been adopted because the operational scenario consists of mostly straight roads and gentle curves at moderate speed; for higher speeds and tighter curves, a second-degree polynomial would be necessary, with a corresponding increase in sensitivity to outliers. The heading error is then computed as
+$ alpha = "atan2"(y_"la", L_d) $
+which is the body-frame counterpart of the world-frame definition given in @sec_heading. The same PI controller, with the same low-pass filter on $alpha$, then produces the steering command.
+
+=== Junction Handling
+A specific issue that arises with the vision-based formulation, but not with the path-based formulations, is the disappearance of the lane markings inside an intersection. CARLA, like real-world road infrastructure, does not paint lane markings inside junctions, so the lane-detection network either returns nothing or returns lines that belong to the entry and exit lanes of different branches. To prevent the controller from acting on this unreliable input, a junction-detection mechanism has been added on top of the perception pipeline. At every tick, the closest waypoint is queried with `is_junction`; if either this flag is set, or the vehicle is inside one of three pre-flagged buffer regions where the lane markings are known to disappear before `is_junction` flips, the LKA function is temporarily disabled and the control is handed off to the CARLA Traffic Manager autopilot until the vehicle exits the junction. A reset of the integral state of the PI controller and of the look-ahead-distance filter is performed at every re-engagement, so that no transient is propagated from one intersection to the next.
+
+== Method Comparison <sec_comparison>
+The three architectures presented in this chapter solve the same lane-keeping problem with progressively richer information and progressively more sophisticated control structure. From a purely control-theoretic standpoint, they can be summarised as in @arch_summary.
+
+#text(size: 9.4558pt, top-edge: "cap-height", bottom-edge: "baseline")[#figure(
+  table(
+    columns: 4,
+    table.header(
+      [Property], [Cross-track PID], [Heading-error PI], [Vision-based PI]
+    ),
+    [Reference signal], [recorded path], [recorded path], [reconstructed centre line],
+    [Error signal], [perpendicular distance $e_y$], [look-ahead angle $alpha$], [look-ahead angle $alpha$],
+    [Plant order], [2 (double integrator)], [1 (single integrator)], [1 (single integrator)],
+    [Required terms], [$P + I + D$], [$P + I$ ($D$ optional)], [$P + I$ ($D$ optional)],
+    [Plant gain scaling], [$prop v^2$], [$prop v$], [$prop v$],
+    [Gain scheduling], [$prop 1 slash v^2$], [$prop 1 slash v$], [$prop 1 slash v$],
+    [Phase margin], [smaller], [larger], [larger],
+    [Robustness to noise], [moderate], [good], [depends on detector],
+    [Map dependence], [yes (pre-recorded)], [yes (pre-recorded)], [no],
+    [Generalisation], [restricted to recorded route], [restricted to recorded route], [unrestricted within ODD],
+  ), caption: [Side-by-side comparison of the three lateral-control architectures along the dimensions that are most relevant for an LKA function.]
+) <arch_summary>]
+
+The progression from one architecture to the next is informed by a clear control-theoretic rationale rather than by an incremental engineering choice. The move from the cross-track to the heading-error formulation is motivated by the reduction in plant order: by closing the loop on the angle to a look-ahead point rather than on the perpendicular distance to the path, one of the two integrators of the cross-track plant is removed, the derivative term becomes optional, the gain schedule becomes gentler, and the phase margin becomes larger at any fixed bandwidth. The move from the path-based heading-error formulation to the vision-based one is motivated by the removal of the dependence on a pre-recorded reference: the same controller can be used on any road that the lane-detection network has been trained for, at the cost of an additional perception layer that has its own failure modes—most notably inside intersections, which has motivated the introduction of an explicit junction-handling logic.
+
+The numerical evaluation of the three architectures on a common test scenario is the subject of the next chapter, which will quantify the qualitative arguments developed here in terms of cross-track error, lateral RMSE, and steering-command smoothness.

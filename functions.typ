@@ -223,8 +223,6 @@ show heading.where(
   #it.body
 ]}
 
-
-
-
 include "Appendix A.typ"
+include "Appendix_B.typ"
 }
