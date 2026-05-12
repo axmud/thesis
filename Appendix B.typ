@@ -1,7 +1,7 @@
 #import "functions.typ": *
 
 = Code Excerpts <app:b>
-This appendix collects the Python excerpts that support @ch2 and @ch3. The full source tree is available in the project repository; what follows is a curated selection of the routines that are referenced explicitly in the text.
+This appendix collects the Python excerpts that support @ch2 and @ch3. The full source tree is available in the open-source repository `LaneDetCarla` @lanedetcarla; what follows is a curated selection of the routines that are referenced explicitly in the text.
 
 == Data Collectors (Chapter 2)
 The two routines used during the data-gathering phase. The first one, `carla_data_collector`, records the dynamic state of the ego vehicle; the second one, `carla_data_collector_2`, records the geometric reference exposed by the CARLA waypoint graph. Both are called once per tick from the main loop.

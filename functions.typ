@@ -1,19 +1,14 @@
-#import "@preview/meander:0.4.2"
 #import "@preview/wrap-it:0.1.1": wrap-content
-
-
-#let imageonside(lefttext, rightimage, bottomtext: none, marginleft: 0em, margintop: 0.5em) = {
-  set par(justify: true)
-  grid(columns: 2, column-gutter: 1em, lefttext, rightimage)
-  set par(justify: false)
-  block(inset: (left: marginleft, top: -margintop), bottomtext)
-}
 
 #let render_face(body) = {
 pdf.attach("abstract.typ", relationship: "source")
 pdf.attach("Appendix A.typ",relationship: "source")
+pdf.attach("Appendix B.typ",relationship: "source")
 pdf.attach("chapter1.typ", relationship: "source")
 pdf.attach("chapter2.typ", relationship: "source")
+pdf.attach("chapter3.typ", relationship: "source")
+pdf.attach("chapter4.typ", relationship: "source")
+pdf.attach("chapter5.typ", relationship: "source")
 pdf.attach("functions.typ", relationship: "source")
 pdf.attach("main.typ", relationship: "source")
 pdf.attach("refs.bib", relationship: "source")
@@ -134,11 +129,44 @@ show raw: set text(size: normalsize, font: "sftt1200", hyphenate: true)
 
 show outline.entry.where(
   level: 1
-): it => link(it.element.location(), block(above: 1.8em)[#strong[#it.prefix() #it.body()]])
+): it => link(it.element.location(), block(above: 1.8em - normalsize)[#strong[#it.prefix() #it.body()]])
 
 block(below: 2.25cm)[#text(size: huge, font: "sfbx2488")[Contents]]
 
+
+
+
+
+
+/////////////////////////////////////////////
+set text(
+  font: "sfrm1200",
+  size: normalsize,
+  lang: "en",
+  top-edge: "ascender",
+  bottom-edge: "descender"
+)
+set par(
+        spacing: spac - normalsize,
+        leading: spac - normalsize
+        )
 outline(title: none, depth: 2)
+set text(
+  font: "sfrm1200",
+  size: normalsize,
+  lang: "en",
+  top-edge: 0em,
+  bottom-edge: 0em
+)
+set par(
+        spacing: spac,
+        leading: spac
+        )
+/////////////////////////////////////////////
+
+
+
+
 
 
 pagebreak()
@@ -163,15 +191,6 @@ show heading.where(
   #it.body
 ]}
 
-// import "@preview/codly:1.3.0": *
-// import "@preview/codly-languages:0.1.1": *
-// show: codly-init.with()
-// codly(languages: codly-languages)
-// show raw.where(block: true): it => {
-//   set text(top-edge: "bounds", bottom-edge: "bounds")
-//   set par(leading: 1.5em - "bounds")
-//   it
-// }
 let style-number(number) = text(gray)[#number]
 show raw.where(block: true): it => grid(
   columns: 2,
@@ -187,7 +206,7 @@ body // body bu yerda turibdi  ///////////////////////////////////////
 
 show outline.entry.where(
   level: 1
-): it => link(it.element.location(), block(above: 1.8em)[#it.prefix() #it.inner()])
+): it => link(it.element.location(), block(above: 1.8em - normalsize)[#it.prefix() #it.inner()])
 
 pagebreak()
 block(width: 100%, below: 21.45mm)[
@@ -197,13 +216,73 @@ block(width: 100%, below: 21.45mm)[
   Bibliography
 ]
 bibliography("refs.bib", title: none)
+
+
+
+
+
+
+///////////////////////////////////////////////////////
 pagebreak()
 block(below: 2.25cm)[#text(size: huge, font: "sfbx2488")[List of Figures]]
+set text(
+  font: "sfrm1200",
+  size: normalsize,
+  lang: "en",
+  top-edge: "ascender",
+  bottom-edge: "descender"
+)
+set par(
+        spacing: spac - normalsize,
+        leading: spac - normalsize
+        )
 outline(title: none, target: figure.where(kind: image))
+set text(
+  font: "sfrm1200",
+  size: normalsize,
+  lang: "en",
+  top-edge: 0em,
+  bottom-edge: 0em
+)
+set par(
+        spacing: spac,
+        leading: spac
+        )
+///////////////////////////////////////////////////////
 
+
+
+
+
+///////////////////////////////////////////////////////
 pagebreak()
 block(below: 2.25cm)[#text(size: huge, font: "sfbx2488")[List of Tables]]
+set text(
+  font: "sfrm1200",
+  size: normalsize,
+  lang: "en",
+  top-edge: "ascender",
+  bottom-edge: "descender"
+)
+set par(
+        spacing: spac - normalsize,
+        leading: spac - normalsize
+        )
 outline(title: none, target: figure.where(kind: table))
+set text(
+  font: "sfrm1200",
+  size: normalsize,
+  lang: "en",
+  top-edge: 0em,
+  bottom-edge: 0em
+)
+set par(
+        spacing: spac,
+        leading: spac
+        )
+///////////////////////////////////////////////////////
+
+
 
 
 
@@ -224,5 +303,5 @@ show heading.where(
 ]}
 
 include "Appendix A.typ"
-include "Appendix_B.typ"
+include "Appendix B.typ"
 }

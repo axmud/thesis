@@ -1,5 +1,5 @@
 #import "functions.typ": *
-= Introduction
+= Introduction <ch1>
 == What is autonomous driving
 For 3 million years human being has been creating tools to ease their daily chores in order to make better life. One of the successful creation of human as decent invention is vehicles. First automobile ever created is involved to late 19th century. Since that vehicles have been evolving rapidly, so, recent decades we had new concept of vehicle so-called "Autonomous Vehicle".
 
@@ -145,12 +145,12 @@ Artuñedo et al. present a comparative evaluation of state-of-the-art lateral co
 
 Dominguez et al. experimentally compare several classical lateral controllers—such as Pure Pursuit and Stanley—on an autonomous vehicle platform @7795743. They study the performance of these controllers in terms of tracking error and stability, using a combination of simulation and real-world experiments. Their work provides practical insight into the behaviour of commonly used path-tracking controllers and their suitability for autonomous driving applications.
 
-Snider’s technical report is a widely cited reference on automatic steering methods for autonomous automobile path tracking @snider2009automatic. It describes the mathematical formulation and implementation details of several steering controllers, including Pure Pursuit and Stanley, and discusses their application to autonomous vehicles. This report is frequently used as a theoretical foundation when implementing classical lateral control laws.
+Snider’s technical report is a widely cited reference on automatic steering methods for autonomous automobile path tracking @Snider2009AutomaticSM. It describes the mathematical formulation and implementation details of several steering controllers, including Pure Pursuit and Stanley, and discusses their application to autonomous vehicles. This report is frequently used as a theoretical foundation when implementing classical lateral control laws.
 
 These studies provide a solid theoretical and experimental basis for the lateral control part of Lane Keeping Assist. However, most of them either assume ideal path or lane information (for example, predefined waypoints or ground-truth lane geometry) or focus on real-vehicle experiments without an explicit simulation-based ViL framework. They do not analyse in detail how classical lateral controllers perform when they receive lane information from a real-time camera-based perception pipeline inside a simulator.\
 *Identified gap and relation to this thesis*
 
-In summary, the literature on ViL shows how combined real–virtual setups can be used to validate autonomous driving systems @electronics11244073,@survey_test_bench,@xiong_hu}, while the lateral control literature provides a variety of controllers and comparative evaluations for path and lane tracking @kebbati,@ARTUNEDO2024100910,@7795743,@snider2009automatic}. However, the combination of these two aspects
+In summary, the literature on ViL shows how combined real–virtual setups can be used to validate autonomous driving systems @electronics11244073,@survey_test_bench,@xiong_hu}, while the lateral control literature provides a variety of controllers and comparative evaluations for path and lane tracking @kebbati,@ARTUNEDO2024100910,@7795743,@Snider2009AutomaticSM}. However, the combination of these two aspects
 - a *Vehicle-in-the-Loop-style simulation environment* in a high-fidelity simulator, and
 - a *camera-based Lane Keeping Assist function* implemented as an external control stack — is less represented in the existing works.
 
