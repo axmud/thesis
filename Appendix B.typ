@@ -6,7 +6,8 @@ This appendix collects the Python excerpts that support @ch2 and @ch3. The full 
 == Data Collectors (Chapter 2)
 The two routines used during the data-gathering phase. The first one, `carla_data_collector`, records the dynamic state of the ego vehicle; the second one, `carla_data_collector_2`, records the geometric reference exposed by the CARLA waypoint graph. Both are called once per tick from the main loop.
 
-#raw("def carla_data_collector(vehicle: carla.Vehicle):
+#raw(
+    "def carla_data_collector(vehicle: carla.Vehicle):
     frame = vehicle.get_world().get_snapshot().frame
     transform = vehicle.get_transform()
     location = transform.location
@@ -37,11 +38,15 @@ def carla_data_collector_2(vehicle: carla.Vehicle):
     loc = waypoint.transform.location
     fwd = waypoint.transform.get_forward_vector()
     return {\"x\": loc.x, \"y\": loc.y,
-            \"vector_x\": fwd.x, \"vector_y\": fwd.y}", lang: "python", block: true)
+            \"vector_x\": fwd.x, \"vector_y\": fwd.y}",
+    lang: "python",
+    block: true,
+)
 
 The duplicate-suppression block that wraps `carla_data_collector_2` to avoid writing identical rows to the `.csv` file when the closest waypoint does not change between consecutive ticks:
 
-#raw("data = {\"waypoint_x\": [], \"waypoint_y\": [],
+#raw(
+    "data = {\"waypoint_x\": [], \"waypoint_y\": [],
         \"vector_x\": [],  \"vector_y\": []}
 
 while not crashed:
@@ -55,11 +60,15 @@ while not crashed:
         data[\"vector_x\"].append(sample[\"vector_x\"])
         data[\"vector_y\"].append(sample[\"vector_y\"])
 
-pd.DataFrame(data).to_csv(\"carla_data.csv\", index=True)", lang: "python", block: true)
+pd.DataFrame(data).to_csv(\"carla_data.csv\", index=True)",
+    lang: "python",
+    block: true,
+)
 
 The corresponding logging routine for the manual-driving mode. The autopilot is disengaged with `vehicle.set_autopilot(False)` and the user inputs from the keyboard are translated by the `ControlObject` class (also reported in this appendix) into a `carla.VehicleControl` object that is applied to the ego vehicle.
 
-#raw("data = {
+#raw(
+    "data = {
     \"frame\": [], \"x\": [], \"y\": [], \"yaw\": [],
     \"v_x\": [], \"v_y\": [], \"a_x\": [],
     \"throttle\": [], \"brake\": [], \"steer\": []
@@ -84,12 +93,16 @@ while not crashed:
     data[\"brake\"].append(control.brake)
     data[\"steer\"].append(control.steer)
 
-pd.DataFrame(data).to_csv(\"manual_drive_log.csv\", index=False)", lang: "python", block: true)
+pd.DataFrame(data).to_csv(\"manual_drive_log.csv\", index=False)",
+    lang: "python",
+    block: true,
+)
 
 == Cross-Track Error (Chapter 3, @sec_xtrack)
 The vectorised implementation of @eqt:eq_lane_shift. A monotonically increasing global index is used so that the search remains $O(1)$ in the length of the reference path and so that the controller cannot "snap" backwards on a closed circuit.
 
-#raw("index = 0
+#raw(
+    "index = 0
 FUTURE_HORIZON = 10
 
 def lane_shift_calculator(vehicle: carla.Vehicle):
@@ -110,12 +123,16 @@ def lane_shift_calculator(vehicle: carla.Vehicle):
     lane_shift = dx[offset] * vy - dy[offset] * vx
 
     nearest_dist = float(np.sqrt(sq_dist[offset]))
-    return lane_shift, nearest_dist", lang: "python", block: true)
+    return lane_shift, nearest_dist",
+    lang: "python",
+    block: true,
+)
 
 == Heading Error and Look-Ahead Target (Chapter 3, @sec_heading)
-The heading error is computed via a two-argument arctangent so that all four quadrants are handled correctly. The look-ahead target is the first waypoint on the recorded path whose distance from the vehicle exceeds $L_d(v) = L_d^"min" + k_L  v$.
+The heading error is computed via a two-argument arctangent so that all four quadrants are handled correctly. The look-ahead target is the first waypoint on the recorded path whose distance from the vehicle exceeds $L_d(v) = L_d^"min" + k_L v$.
 
-#raw("LOOKAHEAD_MIN = 4.0   # m
+#raw(
+    "LOOKAHEAD_MIN = 4.0   # m
 LOOKAHEAD_K   = 0.6   # s
 
 def get_lookahead_target(vehicle: carla.Vehicle):
@@ -148,12 +165,16 @@ def heading_error(vehicle: carla.Vehicle, target_x: float, target_y: float):
     cross_z = v_vec[0] * w_vec[1] - v_vec[1] * w_vec[0]
     if cross_z < 0:
         angle = -angle
-    return angle", lang: "python", block: true)
+    return angle",
+    lang: "python",
+    block: true,
+)
 
 == PID Controllers (Chapter 3, @sec_pid_theory)
 The discrete PID law of @eqt:eq_pid_disc is implemented as two stateful controllers, one for the lateral channel and one for the longitudinal channel. The state is held in a fixed-length deque, which provides an implicit anti-windup limit equal to the deque length times the sampling period. The output is then clipped to the actuator range.
 
-#raw("class PIDLateralController:
+#raw(
+    "class PIDLateralController:
     def __init__(self, K_P=1.95, K_I=0.05, K_D=0.2, dt=0.05):
         self._K_P, self._K_I, self._K_D, self._dt = K_P, K_I, K_D, dt
         self._e_buffer = deque(maxlen=10)
@@ -187,11 +208,15 @@ class PIDLongitudinalController:
             ie = 0.0
         return float(np.clip(
             self._K_P * error + self._K_D * de + self._K_I * ie,
-            -1.0, 1.0))", lang: "python", block: true)
+            -1.0, 1.0))",
+    lang: "python",
+    block: true,
+)
 
 The combined controller `VehiclePIDController` couples the two channels and returns a single `carla.VehicleControl` object per tick. The signed acceleration produced by the longitudinal controller is mapped to the throttle when positive and to the brake when negative; the steering output of the lateral controller is rate-limited to a maximum increment of $0.1$ per step before being applied.
 
-#raw("class VehiclePIDController:
+#raw(
+    "class VehiclePIDController:
     def __init__(self, vehicle, args_lateral=None, args_longitudinal=None,
                  max_throttle=0.75, max_brake=0.3, max_steering=0.8):
         self._vehicle = vehicle
@@ -224,12 +249,16 @@ The combined controller `VehiclePIDController` couples the two channels and retu
         steering = max(-self._max_steer, min(self._max_steer, steering))
         control.steer = steering
         self.past_steering = steering
-        return control", lang: "python", block: true)
+        return control",
+    lang: "python",
+    block: true,
+)
 
 == Inverse Perspective Mapping (Chapter 3, @sec_vision)
 The `pixel_to_vehicle` routine projects a list of image-plane points onto the ground plane in the body frame of the vehicle, under the pinhole-camera and flat-ground assumptions described in @sec_vision.
 
-#raw("def pixel_to_vehicle(pixel_pts, cam_height,
+#raw(
+    "def pixel_to_vehicle(pixel_pts, cam_height,
                      image_width=1280, image_height=720,
                      fov_deg=90.0, cam_x_offset=0.0, max_range=40.0):
     p = np.asarray(pixel_pts, dtype=np.float64)
@@ -247,11 +276,15 @@ The `pixel_to_vehicle` routine projects a list of image-plane points onto the gr
     Y_cam = X_cam * (u - cx) / fx
 
     pts = np.column_stack([X_cam + cam_x_offset, Y_cam])
-    return pts[pts[:, 0] <= max_range]", lang: "python", block: true)
+    return pts[pts[:, 0] <= max_range]",
+    lang: "python",
+    block: true,
+)
 
 The polynomial fit and look-ahead-target evaluation that follow the IPM step:
 
-#raw("def vision_target(centerline_body, Ld, x_min=0.5, x_max=20.0, deg=1):
+#raw(
+    "def vision_target(centerline_body, Ld, x_min=0.5, x_max=20.0, deg=1):
     if centerline_body is None or centerline_body.shape[0] < 3:
         return None
     pts = centerline_body[(centerline_body[:, 0] > x_min) &
@@ -260,12 +293,16 @@ The polynomial fit and look-ahead-target evaluation that follow the IPM step:
         return None
     coeffs = np.polyfit(pts[:, 0], pts[:, 1], deg=deg)
     y_at_Ld = float(np.polyval(coeffs, Ld))
-    return Ld, y_at_Ld", lang: "python", block: true)
+    return Ld, y_at_Ld",
+    lang: "python",
+    block: true,
+)
 
 == System Identification (Chapter 3, @sec_sysid)
 The two step experiments and the corresponding nonlinear least-squares fits, as implemented in `carla_sysid.py` and `pid_tuning.py`. The longitudinal model is a first-order step response; the lateral identification uses the steady-state value of the yaw rate to back out the steering gain $K_"steer"$.
 
-#raw("def fit_longitudinal(lon_df, u_step):
+#raw(
+    "def fit_longitudinal(lon_df, u_step):
     t = lon_df['t'].to_numpy()
     v = lon_df['speed_kmh'].to_numpy()
 
@@ -285,11 +322,15 @@ def fit_lateral_gain(lat_df, L, delta_cmd):
     psi_dot_ss = math.radians(tail['yaw_rate_dps'].mean())
     V = tail['speed_kmh'].mean() / 3.6
     K_steer = psi_dot_ss * L / (V * delta_cmd)
-    return float(K_steer), float(V), float(psi_dot_ss)", lang: "python", block: true)
+    return float(K_steer), float(V), float(psi_dot_ss)",
+    lang: "python",
+    block: true,
+)
 
 The pole-placement routines that map the identified plant parameters into the analytical PID gains derived in @eqt:eq_xtrack_gains and @eqt:eq_heading_gains:
 
-#raw("def tune_lateral_xtrack(K_lat, wn):
+#raw(
+    "def tune_lateral_xtrack(K_lat, wn):
     # double integrator -> (s+wn)^3 -> full PID
     K_d = 3.0 * wn        / K_lat
     K_p = 3.0 * wn * wn   / K_lat
@@ -308,12 +349,16 @@ def tune_longitudinal(K, tau, wn):
     # first-order plant -> (s+wn)^2 -> PI
     K_p = (2.0 * wn * tau - 1.0) / K
     K_i = (wn * wn * tau)        / K
-    return {'K_P': K_p, 'K_I': K_i, 'K_D': 0.0}", lang: "python", block: true)
+    return {'K_P': K_p, 'K_I': K_i, 'K_D': 0.0}",
+    lang: "python",
+    block: true,
+)
 
 == Manual-Override Class
 The `ControlObject` class implements the keyboard fallback used in all three architectures. The class follows a two-step design: the `parse_control` method is called for every keyboard event and only updates the internal flags; the heavier `process_control` method is called once per simulation tick and turns those flags into actual `VehicleControl` values, with progressive throttle ramping, automatic reverse engagement at low speed, and exponential return-to-centre on the steering wheel.
 
-#raw("class ControlObject(object):
+#raw(
+    "class ControlObject(object):
     def __init__(self, veh):
         self._vehicle = veh
         self._throttle = False
@@ -370,4 +415,7 @@ The `ControlObject` class implements the keyboard fallback used in all three arc
                 self._steer_cache = 0.0
             self._control.steer = round(self._steer_cache, 1)
 
-        self._vehicle.apply_control(self._control)", lang: "python", block: true)
+        self._vehicle.apply_control(self._control)",
+    lang: "python",
+    block: true,
+)

@@ -9,19 +9,27 @@ The chapter is structured as follows. @sec_lka_overview gives a high-level descr
 The lateral-control function has been implemented in three increasingly sophisticated forms, each of which is studied in a dedicated module of the source tree:
 
 #list(
-  [_Cross-track PID_ (`lane_shift_pid/`). The lateral error is the signed perpendicular distance between the vehicle and the closest waypoint on the recorded reference path. A discrete-time PID controller produces the steering command directly from this distance.],
-  [_Heading-error PID_ (`heading_error_pid/`). The lateral error is the signed angle between the vehicle's forward direction and the line that connects the vehicle to a look-ahead point placed on the reference path at a speed-dependent distance ahead. The error signal is now an angle, and a discrete-time PI controller is sufficient to drive it to zero.],
-  [_Vision-based heading-error PID_ (`detection&pid.py`). The reference path is no longer read from a pre-recorded `.csv` file. Instead, the centre line of the lane is reconstructed at every tick from the RGB camera using a deep convolutional lane-detection network and an inverse-perspective-mapping projection. A look-ahead target is selected on the reconstructed centre line and is fed to the same PI controller as in the previous case.]
+    [_Cross-track PID_ (`lane_shift_pid/`). The lateral error is the signed perpendicular distance between the vehicle and the closest waypoint on the recorded reference path. A discrete-time PID controller produces the steering command directly from this distance.],
+    [_Heading-error PID_ (`heading_error_pid/`). The lateral error is the signed angle between the vehicle's forward direction and the line that connects the vehicle to a look-ahead point placed on the reference path at a speed-dependent distance ahead. The error signal is now an angle, and a discrete-time PI controller is sufficient to drive it to zero.],
+    [_Vision-based heading-error PID_ (`detection&pid.py`). The reference path is no longer read from a pre-recorded `.csv` file. Instead, the centre line of the lane is reconstructed at every tick from the RGB camera using a deep convolutional lane-detection network and an inverse-perspective-mapping projection. A look-ahead target is selected on the reconstructed centre line and is fed to the same PI controller as in the previous case.],
 )
 
 The three architectures are sketched side by side in @three_arch. They share the same actuator (the `carla.VehicleControl.steer` field), the same simulation rate ($T_s = 0.05$ s), the same vehicle dynamics, and—crucially—the same lateral plant up to the choice of the error signal. The differences between them are confined to two well-defined components: the way the lateral error is constructed, and the structure of the PID controller that consumes it. This modular separation makes it possible to compare the three approaches on equal footing, and to attribute the observed differences in behaviour to specific design choices rather than to incidental implementation details.
 
-#figure(image("image/three_architectures.jpeg"), caption: [Block-diagram comparison of the three lateral-control architectures investigated in this thesis. The first one closes the loop on the cross-track distance computed against a recorded path; the second one closes the loop on a heading angle derived from a speed-dependent look-ahead point; the third one replaces the recorded path with a perception pipeline that reconstructs the centre line of the lane from the camera image. All three architectures share the same actuator, the same vehicle dynamics, and the same PID structure.], placement: auto) <three_arch>
+#figure(
+    image("image/three_architectures.jpeg"),
+    caption: [Block-diagram comparison of the three lateral-control architectures investigated in this thesis. The first one closes the loop on the cross-track distance computed against a recorded path; the second one closes the loop on a heading angle derived from a speed-dependent look-ahead point; the third one replaces the recorded path with a perception pipeline that reconstructs the centre line of the lane from the camera image. All three architectures share the same actuator, the same vehicle dynamics, and the same PID structure.],
+    placement: auto,
+) <three_arch>
 
 == The Kinematic Bicycle Model Revisited <sec_bicycle>
 The kinematic bicycle model introduced in @ch2 is the simplest description of the planar motion of a four-wheeled vehicle. It collapses the front pair of wheels into a single equivalent wheel placed at the front axle, and similarly for the rear pair, and ignores tyre slip. Under these assumptions the configuration of the vehicle is fully described by three quantities: the position $(x, y)$ of a reference point—conventionally taken at the centre of the rear axle—and the yaw angle $psi$ that the body of the vehicle makes with the world $x$-axis. The configuration space is therefore $RR^2 times S^1$, and a useful sketch of its variables is given in @bicycle.
 
-#figure(image("image/bicycle_model.jpeg"), caption: [Kinematic bicycle model. The vehicle has wheelbase $L$, longitudinal speed $v$ at the rear axle, yaw angle $psi$ relative to the world $x$-axis, and a front steering angle $delta$ measured from the longitudinal axis of the body. The yaw rate $accent(psi, dot)$ is determined by the geometry of the model.], placement: auto) <bicycle>
+#figure(
+    image("image/bicycle_model.jpeg"),
+    caption: [Kinematic bicycle model. The vehicle has wheelbase $L$, longitudinal speed $v$ at the rear axle, yaw angle $psi$ relative to the world $x$-axis, and a front steering angle $delta$ measured from the longitudinal axis of the body. The yaw rate $accent(psi, dot)$ is determined by the geometry of the model.],
+    placement: auto,
+) <bicycle>
 
 Two scalar control inputs act on the model: the longitudinal speed $v$ at the rear axle, controlled through the throttle and brake pedals, and the steering angle $delta$ at the front wheel. With these inputs, the equations of motion of the bicycle are
 $ accent(x, dot) = v cos psi $
@@ -31,26 +39,33 @@ where $L$ is the wheelbase. For the small steering angles that occur in normal d
 $ accent(psi, dot) = v / L delta $
 
 In the CARLA Python API, the steering input is not the physical steering angle $delta$ but a normalised "steer command" $delta_c in [-1, +1]$ that the simulator scales internally by a vehicle-specific maximum angle $delta_max$. The relationship $delta = K_"steer" delta_c$ with $K_"steer" approx delta_max$ is approximately linear in the regime of interest @kebbati. Plugging this relationship into the yaw-rate equation gives the relation between the actuator command and the resulting yaw rate:
-$ accent(psi, dot) = v K_"steer" / L  delta_c $
+$ accent(psi, dot) = v K_"steer" / L delta_c $
 
 The key observation is that $accent(psi, dot)$ depends linearly on the steering command and on the speed. The factor $v/L$ appears because at higher speeds the same steering angle traces a larger arc per unit time. From a control-theory perspective, the steering channel of the vehicle is an _open-loop integrator_ whose gain scales with speed: if the steering command is held constant, the yaw rate is constant and the heading angle grows linearly in time. This integrator is the building block from which the two plants of @sec_xtrack and @sec_heading will be constructed.
 
 == The PID Feedback Law <sec_pid_theory>
 A Proportional–Integral–Derivative controller computes the control action $u(t)$ as a linear combination of three terms: the present error, the accumulated past error, and the rate of change of the error. Given a scalar error signal $e(t)$, the continuous-time PID law is
-$ u(t) = K_p e(t) + K_i integral_0^t e(tau) d tau + K_d (d e(t))/(d t) $ <eq_pid_cont>
+$
+    u(t) = K_p e(t) + K_i integral_0^t e(tau) d tau + K_d (d e(t))/(d t)
+$ <eq_pid_cont>
 
 Each term plays a specific role in the LKA context. The proportional term $K_p e(t)$ produces an immediate reaction whose magnitude is proportional to the present error and is responsible for the fast component of the response. The integral term $K_i integral e(tau) d tau$ accumulates the past error and removes the steady-state offset that would otherwise persist when the plant has finite DC gain or when the disturbance is constant—for instance on a constantly cambered road, or under a small wheel-alignment offset. The derivative term $K_d accent(e, dot)(t)$ anticipates the future evolution of the error from its rate of change and adds damping when the error is approaching zero. The qualitative effect of changing each gain on the closed-loop response is summarised in @pid_effects; these dependencies are well known from the control literature @astrom and are repeated here only because they directly inform the manual tuning that has been performed during the development.
 
 #text(size: 9.4558pt, top-edge: "cap-height", bottom-edge: "baseline")[#figure(
-  table(
-    columns: 5,
-    table.header(
-      [Gain], [Rise time], [Overshoot], [Settling time], [Steady-state error]
+    table(
+        columns: 5,
+        table.header(
+            [Gain],
+            [Rise time],
+            [Overshoot],
+            [Settling time],
+            [Steady-state error],
+        ),
+        [Increase $K_p$], [decreases], [increases], [small change], [decreases],
+        [Increase $K_i$], [decreases], [increases], [increases], [eliminates],
+        [Increase $K_d$], [small change], [decreases], [decreases], [no effect],
     ),
-    [Increase $K_p$], [decreases], [increases], [small change], [decreases],
-    [Increase $K_i$], [decreases], [increases], [increases], [eliminates],
-    [Increase $K_d$], [small change], [decreases], [decreases], [no effect]
-  ), caption: [Qualitative effect of each PID gain on the closed-loop response of a generic plant.]
+    caption: [Qualitative effect of each PID gain on the closed-loop response of a generic plant.],
 ) <pid_effects>]
 
 === Discrete-Time Implementation
@@ -72,23 +87,31 @@ A third, more subtle issue is the _rate of change_ of the steering command. A PI
 The first of the three architectures closes the loop on the _cross-track error_ $e_y$, defined as the signed perpendicular distance between the vehicle and the closest waypoint on the reference path. The CARLA waypoint graph exposes, at every position of the world, the closest waypoint together with the unit forward vector $hat(t) = (t_x, t_y)$ tangent to the lane. Given the vehicle position $P_v = (x_v, y_v)$ and the closest waypoint $P_w = (x_w, y_w)$, the cross-track error is the projection of the displacement $arrow(r) = P_w - P_v$ on the unit normal $hat(n) = (-t_y, t_x)$:
 $ e_y = arrow(r) dot hat(n) = (x_w - x_v) (-t_y) + (y_w - y_v) t_x $
 which, after rearrangement of the signs and division by the norm of $hat(t)$ in case the forward vector returned by the API is not exactly normalised, becomes
-$ e_y = ((x_w - x_v) t_y - (y_w - y_v) t_x) / sqrt(t_x^2 + t_y^2) $ <eq_lane_shift>
+$
+    e_y = ((x_w - x_v) t_y - (y_w - y_v) t_x) / sqrt(t_x^2 + t_y^2)
+$ <eq_lane_shift>
 
 The geometric construction has been illustrated in @lane_shift_geom and is not repeated here.
 
-#figure(image("image/lane_shift_geometry.jpeg"), caption: [Geometric definition of the cross-track error $e_y$ as the signed perpendicular distance between the vehicle position $P_v$ and the line through the closest waypoint $P_w$ in the direction of the lane forward vector $hat(t)$. Positive values of $e_y$ correspond to the vehicle being on the right of the lane centre with respect to the direction of travel.], placement: auto) <lane_shift_geom>
+#figure(
+    image("image/lane_shift_geometry.jpeg"),
+    caption: [Geometric definition of the cross-track error $e_y$ as the signed perpendicular distance between the vehicle position $P_v$ and the line through the closest waypoint $P_w$ in the direction of the lane forward vector $hat(t)$. Positive values of $e_y$ correspond to the vehicle being on the right of the lane centre with respect to the direction of travel.],
+    placement: auto,
+) <lane_shift_geom>
 
 === The Cross-Track Plant
 To derive the transfer function from the steering command to the cross-track error, three simple integrations have to be chained. Starting from the bicycle-model relation $accent(psi, dot) = v K_"steer" delta_c / L$ established in @sec_bicycle:
 
 #list(
-[The yaw rate $accent(psi, dot)$ integrated once gives the heading deviation $psi$ from the path tangent.],
-[The heading deviation $psi$ multiplied by the vehicle speed $v$ gives the lateral velocity $accent(y, dot)$ relative to the path (small-angle approximation).],
-[The lateral velocity $accent(y, dot)$ integrated once gives the cross-track distance $e_y$.]
+    [The yaw rate $accent(psi, dot)$ integrated once gives the heading deviation $psi$ from the path tangent.],
+    [The heading deviation $psi$ multiplied by the vehicle speed $v$ gives the lateral velocity $accent(y, dot)$ relative to the path (small-angle approximation).],
+    [The lateral velocity $accent(y, dot)$ integrated once gives the cross-track distance $e_y$.],
 )
 
 In the Laplace domain, the chain of operations is
-$ E_y(s) / Delta_c(s) = (v K_"steer") / L  dot  1/s  dot  v  dot  1/s  =  (v^2 K_"steer") / (L s^2) $ <eq_xtrack_plant>
+$
+    E_y(s) / Delta_c(s) = (v K_"steer") / L dot 1/s dot v dot 1/s = (v^2 K_"steer") / (L s^2)
+$ <eq_xtrack_plant>
 
 The plant from the steering command to the cross-track error is therefore a _double integrator_, with a DC gain that scales with $v^2$. This is the central observation that drives every other property of the cross-track formulation. A double integrator is marginally stable on its own—it has two poles at the origin—and any feedback law that uses only the proportional and integral terms produces a closed-loop system with poles either on the imaginary axis or in the right half-plane. The derivative term is therefore _necessary_ for stability, not optional. Furthermore, the $v^2$ scaling of the DC gain means that, in order to keep the closed-loop bandwidth constant as the vehicle accelerates, all three PID gains have to be re-scaled by $1/v^2$. This is a steep dependence that will be revisited in @sec_sysid.
 
@@ -96,35 +119,47 @@ The plant from the steering command to the cross-track error is therefore a _dou
 A natural choice for the closed-loop denominator of a PID compensating a double integrator is a triple real pole at $s = -omega_n$, which gives a critically damped behaviour with bandwidth $omega_n$. The closed-loop characteristic polynomial of $K_p + K_i / s + K_d s$ acting on $K_"lat" / s^2$ with $K_"lat" = v^2 K_"steer" / L$ is
 $ s^3 + (K_"lat" K_d) s^2 + (K_"lat" K_p) s + K_"lat" K_i $
 Matching with $(s + omega_n)^3 = s^3 + 3 omega_n s^2 + 3 omega_n^2 s + omega_n^3$ yields the analytical gains
-$ K_p = (3 omega_n^2)/K_"lat", quad K_i = (omega_n^3)/K_"lat", quad K_d = (3 omega_n)/K_"lat" $ <eq_xtrack_gains>
+$
+    K_p = (3 omega_n^2)/K_"lat", quad K_i = (omega_n^3)/K_"lat", quad K_d = (3 omega_n)/K_"lat"
+$ <eq_xtrack_gains>
 
 These expressions tell, at a glance, how each gain depends on the vehicle speed: $K_d$ scales as $1/v^2$ through $K_"lat"$, $K_p$ does the same, and $K_i$—the most "expensive" gain in terms of stability margin—decreases as $v^{-2}$ as well. The tuning script `pid_tuning.py` implements exactly @eqt:eq_xtrack_gains and produces, given a measurement of $K_"steer"$ from the system identification of @sec_sysid, the numerical gains that have been used in the simulator.
 
 == Heading-Error Formulation <sec_heading>
 The second architecture replaces the cross-track distance with a different scalar error signal: the angle between the vehicle's forward direction and the line connecting the vehicle to a _look-ahead point_ placed on the reference path at a speed-dependent distance $L_d$ ahead of the vehicle. This formulation is closely related to the Pure Pursuit @Snider2009AutomaticSM and Stanley @7795743 geometric trackers, with the difference that here the steering command is computed by a feedback PID rather than by a fixed geometric formula. The geometric construction is illustrated in @heading_geom.
 
-#figure(image("image/heading_error_geometry.jpeg"), caption: [Heading-error / look-ahead geometry. The look-ahead point $P_"la"$ is the closest waypoint on the reference path at distance at least $L_d$ ahead of the vehicle; the heading error $alpha$ is the signed angle between the vehicle forward unit vector $hat(f)_v$ and the line $P_v -> P_"la"$. The look-ahead distance is scheduled as $L_d = L_d^"min" + k_L  v(t)$.], placement: auto) <heading_geom>
+#figure(
+    image("image/heading_error_geometry.jpeg"),
+    caption: [Heading-error / look-ahead geometry. The look-ahead point $P_"la"$ is the closest waypoint on the reference path at distance at least $L_d$ ahead of the vehicle; the heading error $alpha$ is the signed angle between the vehicle forward unit vector $hat(f)_v$ and the line $P_v -> P_"la"$. The look-ahead distance is scheduled as $L_d = L_d^"min" + k_L v(t)$.],
+    placement: auto,
+) <heading_geom>
 
 Formally, given the vehicle position $P_v = (x_v, y_v)$, its forward unit vector $hat(f)_v = (f_x, f_y)$, and the look-ahead point $P_"la" = (x_l, y_l)$, the heading error $alpha$ is computed from the dot product and the cross product of $hat(f)_v$ with the displacement $arrow(d) = P_"la" - P_v$:
-$ alpha = "atan2"(hat(f)_v times arrow(d),  hat(f)_v dot arrow(d)) $
+$ alpha = "atan2"(hat(f)_v times arrow(d), hat(f)_v dot arrow(d)) $
 The two-argument arctangent returns a signed angle in $(-pi, +pi]$ and naturally handles all four quadrants. By convention—the same one used in the CARLA `agents.navigation.controller.PIDLateralController` and matched in the implementation—a positive $alpha$ corresponds to a target on the right of the vehicle, which calls for a positive (right) steering command.
 
 === The Heading-Error Plant
 Compared with the cross-track formulation, the heading-error plant has _one fewer integration_. Starting again from $accent(psi, dot) = v K_"steer" delta_c / L$, only one step is needed to obtain the heading deviation $alpha$ relative to the look-ahead point. The look-ahead point is, by construction, ahead of the vehicle on the path; if the path is locally straight, the line to the look-ahead point is parallel to the path tangent, and the heading error reduces to the angle between the vehicle's forward vector and the path tangent. In the Laplace domain,
-$ A(s) / Delta_c(s) = (v K_"steer")/(L) dot 1/s = (v K_"steer") / (L s) $ <eq_heading_plant>
+$
+    A(s) / Delta_c(s) = (v K_"steer")/(L) dot 1/s = (v K_"steer") / (L s)
+$ <eq_heading_plant>
 which is a _single integrator_ with a DC gain that scales linearly with $v$, not with $v^2$.
 
 The structural difference between @eqt:eq_xtrack_plant and @eqt:eq_heading_plant is the single most important property of the present chapter, because it has three direct consequences:
 
 #list(
-[A PI controller is sufficient for closed-loop stability. The derivative term is no longer necessary—the plant has only one free integrator—and is included only if the error signal is noisy enough to require derivative filtering.],
-[The gains scale as $1/v$ instead of $1/v^2$. Gain scheduling across the operating speed range is therefore much gentler.],
-[The closed-loop bandwidth that the controller can achieve at fixed gains is higher, because each additional integrator in the plant adds $90 degree$ of phase lag and reduces the available phase margin.]
+    [A PI controller is sufficient for closed-loop stability. The derivative term is no longer necessary—the plant has only one free integrator—and is included only if the error signal is noisy enough to require derivative filtering.],
+    [The gains scale as $1/v$ instead of $1/v^2$. Gain scheduling across the operating speed range is therefore much gentler.],
+    [The closed-loop bandwidth that the controller can achieve at fixed gains is higher, because each additional integrator in the plant adds $90 degree$ of phase lag and reduces the available phase margin.],
 )
 
 The plant comparison is summarised in @plant_block, which puts the two transfer functions side by side and makes the role of the look-ahead point explicit: by closing the loop on the angle to a point on the path rather than on the perpendicular distance to it, the controller "consumes" one of the two integrators that the cross-track formulation has to handle.
 
-#figure(image("image/plant_comparison.jpeg"), caption: [Block-diagram comparison of the cross-track and heading-error plants. The cross-track formulation contains two integrators—yaw rate to heading, and lateral velocity to cross-track distance—while the heading-error formulation contains only one. The reduction in plant order is the reason why a PI controller is sufficient for the heading-error case, while a full PID is required for the cross-track case.], placement: auto) <plant_block>
+#figure(
+    image("image/plant_comparison.jpeg"),
+    caption: [Block-diagram comparison of the cross-track and heading-error plants. The cross-track formulation contains two integrators—yaw rate to heading, and lateral velocity to cross-track distance—while the heading-error formulation contains only one. The reduction in plant order is the reason why a PI controller is sufficient for the heading-error case, while a full PID is required for the cross-track case.],
+    placement: auto,
+) <plant_block>
 
 === Pole Placement
 With the plant given by @eqt:eq_heading_plant and a PI controller $C(s) = K_p + K_i / s$, the closed-loop characteristic polynomial reads
@@ -141,7 +176,9 @@ with a minimum $L_d^"min" = 4$ m that protects against pathological behaviour at
 
 === Heading-Error Filtering
 A practical consideration that is specific to the heading-error formulation is the noise on the error signal. The look-ahead point is selected from a discrete sampling of the reference path, so the heading error is intrinsically a piecewise-constant signal that exhibits small jumps every time the look-ahead point advances by one waypoint. These jumps are amplified by the derivative term and would produce visible jitter on the steering command. In the implementation, the heading error is therefore low-pass filtered with a first-order infinite impulse response filter of pole $alpha_H$:
-$ accent(alpha, tilde)[k] = alpha_H alpha[k] + (1 - alpha_H) accent(alpha, tilde)[k-1] $
+$
+    accent(alpha, tilde)[k] = alpha_H alpha[k] + (1 - alpha_H) accent(alpha, tilde)[k-1]
+$
 with $alpha_H = 0.4$, which corresponds to a cut-off frequency of approximately $2$ Hz at the simulator rate of $20$ Hz. This is well below the Nyquist frequency of the controller and well above the bandwidth of the closed loop, so it removes the per-sample jitter without affecting the dynamic response of the system.
 
 == System Identification and Analytical Tuning <sec_sysid>
@@ -157,7 +194,11 @@ where $K$ is the DC gain (in km/h per unit of throttle) and $tau$ is the time co
 === Lateral Step Experiment
 The second experiment identifies the steering gain $K_"steer"$. The vehicle is settled at a constant speed $V = 30$ km/h with a simple proportional speed regulator, and a small steering step $delta_c = 0.05$ is applied for $2.5$ s. The yaw rate of the vehicle is recorded directly from the `get_angular_velocity` getter of the CARLA Python API. The steady-state yaw rate $accent(psi, dot)_"ss"$ obtained by averaging the last $25%$ of the trace is then matched against the bicycle-model prediction $accent(psi, dot)_"ss" = (V / L) K_"steer" delta_c$, giving
 $ K_"steer" = (accent(psi, dot)_"ss" L) / (V delta_c) $
-#figure(image("image/analytical_comparison.png"), caption: [Analytical comparison of the cross-track PID and heading-error PI controllers, computed symbolically from the identified plant parameters. _Top_: open-loop magnitude and phase. _Bottom-left_: closed-loop step response. _Bottom-right_: proportional gain as a function of vehicle speed, normalised at $30$ km/h. The gentler $1/v$ scaling of the heading-error gain, compared with the $1/v^2$ scaling of the cross-track gain, is the main reason why the heading-error formulation is preferred in the operational range of an LKA function.], placement: auto) <analytic_cmp>
+#figure(
+    image("image/analytical_comparison.png"),
+    caption: [Analytical comparison of the cross-track PID and heading-error PI controllers, computed symbolically from the identified plant parameters. _Top_: open-loop magnitude and phase. _Bottom-left_: closed-loop step response. _Bottom-right_: proportional gain as a function of vehicle speed, normalised at $30$ km/h. The gentler $1/v$ scaling of the heading-error gain, compared with the $1/v^2$ scaling of the cross-track gain, is the main reason why the heading-error formulation is preferred in the operational range of an LKA function.],
+    placement: auto,
+) <analytic_cmp>
 The duration of the lateral step is kept deliberately short, because once the vehicle starts to drift laterally the cross-track error grows quickly and the small-angle assumptions of the bicycle model are no longer satisfied.
 
 === Analytical Plot Comparison
@@ -179,10 +220,14 @@ The detection network operates on a $1280 times 720$ frame extracted from the ca
 === Inverse Perspective Mapping
 The centre line returned by the lane-detection network is expressed in pixel coordinates and cannot be used directly by the controller, which works in the body frame of the vehicle. The conversion from pixels to a body-frame position is performed by the standard _inverse perspective mapping_ (IPM) projection, sketched in @ipm_fig.
 
-#figure(image("image/ipm_geometry.jpeg"), caption: [Inverse perspective mapping (side view). A pixel below the horizon back-projects to a unique point on the ground plane, given the camera height $h_"cam"$ and the camera intrinsics $(f_x, f_y, c_u, c_v)$. Pixels above the horizon $v <= c_v$ project to infinity and are discarded.], placement: auto) <ipm_fig>
+#figure(
+    image("image/ipm_geometry.jpeg"),
+    caption: [Inverse perspective mapping (side view). A pixel below the horizon back-projects to a unique point on the ground plane, given the camera height $h_"cam"$ and the camera intrinsics $(f_x, f_y, c_u, c_v)$. Pixels above the horizon $v <= c_v$ project to infinity and are discarded.],
+    placement: auto,
+) <ipm_fig>
 
 Under the assumptions of a pinhole camera with zero pitch, zero roll, zero yaw, and a flat ground plane, every pixel below the horizon corresponds to a unique point on the ground plane. With the camera mounted at height $h_"cam"$ above the road, with focal lengths $f_x = f_y = w / (2 tan("FOV"/2))$ derived from the image width $w$ and the field of view, and with the principal point at $(c_u, c_v) = (w/2, h/2)$, the mapping reads
-$ X_"cam" = (h_"cam"  f_y) / (v - c_v), quad Y_"cam" = X_"cam" (u - c_u) / f_x $
+$ X_"cam" = (h_"cam" f_y) / (v - c_v), quad Y_"cam" = X_"cam" (u - c_u) / f_x $
 where $X_"cam"$ is the longitudinal distance ahead of the camera, in metres, and $Y_"cam"$ is the lateral distance to the right of the camera. The projection is well defined only for pixels below the horizon, that is for $v > c_v$; pixels above the horizon are discarded. A maximum range $X_"cam" <= 40$ m is also enforced, because at larger distances the small angular resolution of the pixel produces unstable lateral estimates. The constant offset of the camera with respect to the rear axle of the vehicle is taken into account by adding $0.8 b_x$ to $X_"cam"$, where $b_x$ is the half-extent of the bounding box of the vehicle.
 
 The output of the IPM block is therefore a sampling of the centre line of the lane in the body frame of the vehicle, in metres, ordered from the closest sample to the furthest. This is exactly the input that the heading-error formulation of @sec_heading expects, with the only difference that the look-ahead point is now selected on a perception-based reference rather than on a pre-recorded one.
@@ -199,22 +244,46 @@ A specific issue that arises with the vision-based formulation, but not with the
 The three architectures presented in this chapter solve the same lane-keeping problem with progressively richer information and progressively more sophisticated control structure. From a purely control-theoretic standpoint, they can be summarised as in @arch_summary.
 
 #text(size: 9.4558pt, top-edge: "cap-height", bottom-edge: "baseline")[#figure(
-  table(
-    columns: 4,
-    table.header(
-      [Property], [Cross-track PID], [Heading-error PI], [Vision-based PI]
+    table(
+        columns: 4,
+        table.header(
+            [Property], [Cross-track PID], [Heading-error PI], [Vision-based PI]
+        ),
+        [Reference signal],
+        [recorded path],
+        [recorded path],
+        [reconstructed centre line],
+
+        [Error signal],
+        [perpendicular distance $e_y$],
+        [look-ahead angle $alpha$],
+        [look-ahead angle $alpha$],
+
+        [Plant order],
+        [2 (double integrator)],
+        [1 (single integrator)],
+        [1 (single integrator)],
+
+        [Required terms],
+        [$P + I + D$],
+        [$P + I$ ($D$ optional)],
+        [$P + I$ ($D$ optional)],
+
+        [Plant gain scaling], [$prop v^2$], [$prop v$], [$prop v$],
+        [Gain scheduling],
+        [$prop 1 slash v^2$],
+        [$prop 1 slash v$],
+        [$prop 1 slash v$],
+
+        [Phase margin], [smaller], [larger], [larger],
+        [Robustness to noise], [moderate], [good], [depends on detector],
+        [Map dependence], [yes (pre-recorded)], [yes (pre-recorded)], [no],
+        [Generalisation],
+        [restricted to recorded route],
+        [restricted to recorded route],
+        [unrestricted within ODD],
     ),
-    [Reference signal], [recorded path], [recorded path], [reconstructed centre line],
-    [Error signal], [perpendicular distance $e_y$], [look-ahead angle $alpha$], [look-ahead angle $alpha$],
-    [Plant order], [2 (double integrator)], [1 (single integrator)], [1 (single integrator)],
-    [Required terms], [$P + I + D$], [$P + I$ ($D$ optional)], [$P + I$ ($D$ optional)],
-    [Plant gain scaling], [$prop v^2$], [$prop v$], [$prop v$],
-    [Gain scheduling], [$prop 1 slash v^2$], [$prop 1 slash v$], [$prop 1 slash v$],
-    [Phase margin], [smaller], [larger], [larger],
-    [Robustness to noise], [moderate], [good], [depends on detector],
-    [Map dependence], [yes (pre-recorded)], [yes (pre-recorded)], [no],
-    [Generalisation], [restricted to recorded route], [restricted to recorded route], [unrestricted within ODD],
-  ), caption: [Side-by-side comparison of the three lateral-control architectures along the dimensions that are most relevant for an LKA function.]
+    caption: [Side-by-side comparison of the three lateral-control architectures along the dimensions that are most relevant for an LKA function.],
 ) <arch_summary>]
 
 The progression from one architecture to the next is informed by a clear control-theoretic rationale rather than by an incremental engineering choice. The move from the cross-track to the heading-error formulation is motivated by the reduction in plant order: by closing the loop on the angle to a look-ahead point rather than on the perpendicular distance to the path, one of the two integrators of the cross-track plant is removed, the derivative term becomes optional, the gain schedule becomes gentler, and the phase margin becomes larger at any fixed bandwidth. The move from the path-based heading-error formulation to the vision-based one is motivated by the removal of the dependence on a pre-recorded reference: the same controller can be used on any road that the lane-detection network has been trained for, at the cost of an additional perception layer that has its own failure modes—most notably inside intersections, which has motivated the introduction of an explicit junction-handling logic.

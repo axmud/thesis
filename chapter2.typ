@@ -1,53 +1,67 @@
 = Interface Co-Simulation Design <ch2>
 == Selecting the Suitable Simulator
- The development and testing of autonomous driving technologies require a robust simulation environment. This environment must accurately model the real world, including vehicles, pedestrians, and various environmental conditions, while also providing comprehensive support for sensor simulation and enabling integration with analytical tools. After a detailed evaluation of existing simulators, including the Waymo Simulator, LGSVL Simulator, Sim4CV, and CARLA Simulator, based on critical features such as graphic quality, the accuracy of the physics engine, sensor simulation capabilities, the simulation of traffic and pedestrians, weather conditions, the ability to simulate different times of day, CARLA Simulator has been identified as the most suitable choice for my research objectives. CARLA provides high-quality graphics with Unreal Engine 4 @unreal_engine_4 and its physics engine accurately models vehicle dynamics and environmental interactions, offering a solid foundation for testing autonomous driving algorithms under various conditions. Moreover, its ability to simulate a wide range of sensors used in autonomous vehicles, such as cameras, LIDAR, radar, and GNSS, with high fidelity is crucial for the development and testing of perception algorithms. CARLA also excels in simulating dynamic traffic scenarios and pedestrian behaviors, facilitating comprehensive testing of autonomous driving systems in complex urban environments. The capability to simulate different weather conditions and times of day is important for assessing the performance of autonomous vehicle systems under various environmental conditions. For my research, CARLA’s Python API facilitates easy integration with an external controller, providing a seamless workflow for data analysis and algorithm testing. Consequently, CARLA Simulator’s advanced graphics, accurate physics engine, extensive sensor simulation capabilities, and effective traffic and pedestrian simulation set it as the ideal choice for my autonomous driving research. Its compatibility with Python API further supports my analytical and development needs, making it the most suitable simulator for my project.
- == Modeling the Car in the Environment
+The development and testing of autonomous driving technologies require a robust simulation environment. This environment must accurately model the real world, including vehicles, pedestrians, and various environmental conditions, while also providing comprehensive support for sensor simulation and enabling integration with analytical tools. After a detailed evaluation of existing simulators, including the Waymo Simulator, LGSVL Simulator, Sim4CV, and CARLA Simulator, based on critical features such as graphic quality, the accuracy of the physics engine, sensor simulation capabilities, the simulation of traffic and pedestrians, weather conditions, the ability to simulate different times of day, CARLA Simulator has been identified as the most suitable choice for my research objectives. CARLA provides high-quality graphics with Unreal Engine 4 @unreal_engine_4 and its physics engine accurately models vehicle dynamics and environmental interactions, offering a solid foundation for testing autonomous driving algorithms under various conditions. Moreover, its ability to simulate a wide range of sensors used in autonomous vehicles, such as cameras, LIDAR, radar, and GNSS, with high fidelity is crucial for the development and testing of perception algorithms. CARLA also excels in simulating dynamic traffic scenarios and pedestrian behaviors, facilitating comprehensive testing of autonomous driving systems in complex urban environments. The capability to simulate different weather conditions and times of day is important for assessing the performance of autonomous vehicle systems under various environmental conditions. For my research, CARLA’s Python API facilitates easy integration with an external controller, providing a seamless workflow for data analysis and algorithm testing. Consequently, CARLA Simulator’s advanced graphics, accurate physics engine, extensive sensor simulation capabilities, and effective traffic and pedestrian simulation set it as the ideal choice for my autonomous driving research. Its compatibility with Python API further supports my analytical and development needs, making it the most suitable simulator for my project.
+== Modeling the Car in the Environment
 In order to control a vehicle in the simulation, the controller must recognize the vehicle model. For this, a model of the vehicle is needed. Various models can be used when modeling the vehicle. Among these, the most commonly used ones usually offer a good balance between simplicity and accuracy, capable of representing the vehicle’s motion dynamics and control systems. In line with the needs of this project, the Dynamic Single-Track (DST) model has been chosen (shown in @single_track). The DST model (bicycle model) can be modeled with single-track wheels (one front and one rear wheel). This is equivalent to a model where the right and left sides of a four-wheeled vehicle are considered equal.
-#figure(image("image/single track model.jpeg"), caption: [Single Track Model], placement: auto) <single_track>
+#figure(
+    image("image/single track model.jpeg"),
+    caption: [Single Track Model],
+    placement: auto,
+) <single_track>
 *Vehicle variables:* \
 - $δ_f$: steering angle.\
 - $β$: vehicle sleep angle = angle between the vehicle longitudinal axis and velocity\
-- $ β_f, β_r$: tire slip angles = angles between the tire longitudinal axis and velocity.
+- $β_f, β_r$: tire slip angles = angles between the tire longitudinal axis and velocity.
 *Vehicle parameters:*\
 - CoG: center of gravity
 - $m,J$: mass and moment of inertia
 - $l_f$: distance CoG - front wheel center
 - $l_r$: distance CoG - rear wheel center
 - $c_f,c_r$: front/rear cornering stiffnesses.
-#figure(image("image/vehicle reference system.jpeg"), caption: [Vehicle Reference System], placement: auto) <Vehicle_reference>
+#figure(
+    image("image/vehicle reference system.jpeg"),
+    caption: [Vehicle Reference System],
+    placement: auto,
+) <Vehicle_reference>
 *Vehicle Dynamic parameters:*
 - $X,Y$: coordinates of the vehicle CoG in an inertial reference frame (shown in @Vehicle_reference)
 - $ψ$: yaw angle
-- $ω_ψ = accent(ψ,.) $: yaw rate
+- $ω_ψ = accent(ψ, .)$: yaw rate
 - $arrow(v) ≡ V$: velocity vector in the inertial frame
 - $v_x$: longitudinal speed $=arrow(v)$ component along the longitudinal axis
 - $v_y$: lateral speed $=arrow(v)$ component along the lateral (transverse) axis
 - $a_x$: longitudinal acceleration in the inertial frame.
 The state equations of the DST model are:
-$ accent(X,.) = V_x cos ψ−V_y sin ψ $
-$ accent(Y,.) = V_x sin ψ + V_y cos ψ $
-$ accent(ψ,.) =ω_ψ $
-$ accent(V,.)_x = V_y ω_ψ +a_x $
-$ accent(V,.)_y = −V_x ω_ψ + 2/m (F_(y f) + F_(y r)) $
-$ accent(ω,.)_ψ = 2/J (l_f F_(y f) −l_r F_(y r)) $
+$ accent(X, .) = V_x cos ψ−V_y sin ψ $
+$ accent(Y, .) = V_x sin ψ + V_y cos ψ $
+$ accent(ψ, .) =ω_ψ $
+$ accent(V, .)_x = V_y ω_ψ +a_x $
+$ accent(V, .)_y = −V_x ω_ψ + 2/m (F_(y f) + F_(y r)) $
+$ accent(ω, .)_ψ = 2/J (l_f F_(y f) −l_r F_(y r)) $
 
 where $F_(y f)$ and $F_(y r)$ are the lateral forces exchanged between tire and road.
 
 For the tire model, there are several tire model options:
 #block(above: 10.12mm)[
-*Linear (for *$V_x = c o n s t$*) tire model:*
-$  F_(y f) = −C_f β_f, #h(1.5em)F_(y r) = −C_r β_r $
-$ β_f = (V_y +l_f ω_ψ)/V_x − δ_f,#h(1.5em) β_r = (V_y −l_r ω_ψ)/V_x $]
+    *Linear (for *$V_x = c o n s t$*) tire model:*
+    $ F_(y f) = −C_f β_f, #h(1.5em)F_(y r) = −C_r β_r $
+    $ β_f = (V_y +l_f ω_ψ)/V_x − δ_f,#h(1.5em) β_r = (V_y −l_r ω_ψ)/V_x $]
 *Nonlinear simplified tire model:*
 $ F_(y f) = −C_f β_f cos δ_f, #h(1.5em) F_(y r) = −C_r β_r $
-$  β_f = arctan((V_y +l_f ω_ψ)/V_x) −δ_f, #h(1.5em) β_r = arctan((V_y −l_r ω_ψ)/V_x) $
+$
+    β_f = arctan((V_y +l_f ω_ψ)/V_x) −δ_f, #h(1.5em) β_r = arctan((V_y −l_r ω_ψ)/V_x)
+$
 *Nonlinear Pacejka’s tire model:*
 $ F_(y f) = −f_p(β_f)cos δ_f,#h(1.5em) F_(y r) = −f_p(β_r) $
 where $β_f$ and $β_r$ and $f_p (β)$ is given by the Pacejka’s magic formula.
 *Pacejka’s magic formula:*
-$  f_p (β) = p_1 sin(p_2 arctan(p_3 β − p_4(p_3 β − arctan(p_3 β)))) $
+$ f_p (β) = p_1 sin(p_2 arctan(p_3 β − p_4(p_3 β − arctan(p_3 β)))) $
 $p_1$: peak value, $p_2$: shape factor, $p_3$: stiffness factor, $p_4$: curvature factor. Linearizing this formula, we find $p_1 p_2 p_3 = C_f$ (or $C_r$).
-#figure(image("image/friction coef.jpeg"), caption: [Friction Coefficents in different conditions], placement: auto) <friction_coef>
+#figure(
+    image("image/friction coef.jpeg"),
+    caption: [Friction Coefficents in different conditions],
+    placement: auto,
+) <friction_coef>
 In the real world conditions, these parameters are really hard to measure or estimate because they change based on the road conditions (see @friction_coef).
 
 The real parameters of the vehicle in the simulation environment have been found with the help of Carla’s `Vehicle.physics` command.

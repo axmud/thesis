@@ -11,16 +11,16 @@ The reference path was recorded once, in autopilot mode, by driving the ego vehi
 Three closed-loop experiments were then performed on this same route, one for each architecture:
 
 #list(
-  [_Cross-track PID_ (`lane_shift_pid/pygame_controller.py`). The reference is the recorded path; the error is the cross-track distance @eqt:eq_lane_shift; the controller is a full PID with the gains $K_p, K_i, K_d$ produced by `pid_tuning.py` for $omega_n^"lat" = 1.5$ rad/s. The trajectory is logged to `ego_trajectory_shift.csv` and appears in blue on every plot of this chapter.],
-  [_Heading-error PI_ (`heading_error_pid/pygame_controller.py`). The reference is again the recorded path, but the error is the look-ahead heading angle; the controller is a PI with the gains produced by `pid_tuning.py` for $omega_n^"lat" = 2.0$ rad/s. The trajectory is logged to `ego_trajectory_heading.csv` and appears in green.],
-  [_Vision-based PI_ (`detection&pid.py`). The reference is reconstructed at every tick from the RGB camera by the CLRNet lane detector @clrnet followed by the inverse-perspective-mapping projection of @sec_vision. The same PI controller of the previous architecture consumes the heading error computed in the body frame. At intersections the LKA hands off to the CARLA Traffic Manager autopilot, as described in @sec_vision. The trajectory is logged to `ego_trajectory_vision.csv` and appears in red.]
+    [_Cross-track PID_ (`lane_shift_pid/pygame_controller.py`). The reference is the recorded path; the error is the cross-track distance @eqt:eq_lane_shift; the controller is a full PID with the gains $K_p, K_i, K_d$ produced by `pid_tuning.py` for $omega_n^"lat" = 1.5$ rad/s. The trajectory is logged to `ego_trajectory_shift.csv` and appears in blue on every plot of this chapter.],
+    [_Heading-error PI_ (`heading_error_pid/pygame_controller.py`). The reference is again the recorded path, but the error is the look-ahead heading angle; the controller is a PI with the gains produced by `pid_tuning.py` for $omega_n^"lat" = 2.0$ rad/s. The trajectory is logged to `ego_trajectory_heading.csv` and appears in green.],
+    [_Vision-based PI_ (`detection&pid.py`). The reference is reconstructed at every tick from the RGB camera by the CLRNet lane detector @clrnet followed by the inverse-perspective-mapping projection of @sec_vision. The same PI controller of the previous architecture consumes the heading error computed in the body frame. At intersections the LKA hands off to the CARLA Traffic Manager autopilot, as described in @sec_vision. The trajectory is logged to `ego_trajectory_vision.csv` and appears in red.],
 )
 
 The longitudinal channel is identical in the three experiments: a discrete PI regulator drives the speed to $30$ km/h with the gains obtained from the longitudinal step experiment of @sec_sysid. All three trajectories are post-processed by `plot_trajectory.py`, which overlays the recorded reference path and computes two scalar performance metrics:
 
 #list(
-  [The _root-mean-square cross-track error_, $"RMSE"_e_y = sqrt((1/N) sum_(k=1)^N e_y[k]^2)$, which summarises the average tracking accuracy over the run;],
-  [The _maximum absolute cross-track error_, $max abs(e_y) = max_(k) abs(e_y[k])$, which captures the worst-case excursion from the centre of the lane.]
+    [The _root-mean-square cross-track error_, $"RMSE"_e_y = sqrt((1/N) sum_(k=1)^N e_y[k]^2)$, which summarises the average tracking accuracy over the run;],
+    [The _maximum absolute cross-track error_, $max abs(e_y) = max_(k) abs(e_y[k])$, which captures the worst-case excursion from the centre of the lane.],
 )
 
 For the vision-based run, the cross-track error reported by the plotting script is computed _a posteriori_ against the same recorded reference path used by the other two runs, even though the controller itself never has access to that path. This makes the three runs comparable on a common metric and isolates the effect of the perception layer from the rest of the control loop. It is also worth stressing that the cross-track error used here as a comparison metric is _not_ the error signal of the heading-error and vision-based controllers: those two controllers close their loop on an angle, and the cross-track distance is only computed _off-line_ for evaluation purposes.
@@ -28,29 +28,45 @@ For the vision-based run, the cross-track error reported by the plotting script 
 == Qualitative View in CARLA <sec_carla_view>
 Before turning to the numerical metrics, it is useful to look at the test route as it appears in the simulator itself. The script `draw_trajectory_in_carla.py` takes a logged trajectory and draws it as a coloured line directly in the CARLA world, on top of the textured road, using the simulator's debug-drawing API. The start of the trajectory is marked with a green sphere and the end with a red sphere. @fig_traj_carla reproduces one of these renderings for the heading-error PI run, which is the controller that achieves the best tracking accuracy over the full route.
 
-#figure(image("image/fig_trajectory_in_carla.png"), caption: [Top-down view of Town06 with the trajectory of the heading-error PI controller drawn in cyan by `draw_trajectory_in_carla.py`. The green square marks the start of the run, the red square marks the end. The vehicle enters from the top of the figure, executes a $90 degree$ left turn at the intersection, and proceeds east along the arterial. The line stays well inside the lane throughout the manoeuvre, which is the basic visual confirmation that the controller fulfils its LKA purpose. The remaining discussion of this chapter focuses on the quantitative differences between the three architectures along this same route.], placement: auto) <fig_traj_carla>
+#figure(
+    image("image/fig_trajectory_in_carla.png"),
+    caption: [Top-down view of Town06 with the trajectory of the heading-error PI controller drawn in cyan by `draw_trajectory_in_carla.py`. The green square marks the start of the run, the red square marks the end. The vehicle enters from the top of the figure, executes a $90 degree$ left turn at the intersection, and proceeds east along the arterial. The line stays well inside the lane throughout the manoeuvre, which is the basic visual confirmation that the controller fulfils its LKA purpose. The remaining discussion of this chapter focuses on the quantitative differences between the three architectures along this same route.],
+    placement: auto,
+) <fig_traj_carla>
 
 Two observations can already be made from the in-simulator view. First, the trajectory stays well inside the lane throughout the manoeuvre—the rendered line never leaves the asphalt and remains close to the centre of the lane on both the curved and the straight sections of the route. This is the minimum requirement for a Lane Keeping Assist function and the most basic safety check. Second, the corner itself is the most demanding part of the route: it concentrates a large change in the reference heading into a short stretch of road and produces the largest transients in the cross-track error, as the next section will show.
 
 == Full-Route Tracking Performance <sec_full_traj>
 The first quantitative comparison is performed over the entire route. @fig_traj_full shows the top-down trajectory plot (left) and the cross-track error as a function of time (right), with the three controllers overlaid on the same axes and with the RMSE and maximum absolute error reported in the legend.
 
-#figure(image("image/fig_trajectory_full.png"), caption: [Full-route comparison of the three controllers. _Left_: top-down view of the recorded reference path (grey dashed) and of the three closed-loop trajectories (cross-track PID in blue, heading-error PI in green, vision-based PI in red). Start and end of each run are marked with circles and crosses respectively. _Right_: cross-track error $e_y(t)$ as a function of time, with the root-mean-square error and the maximum absolute error reported in the legend. The two large transients around $t approx 18$–$22$ s and $t approx 70$–$75$ s correspond respectively to the $90 degree$ corner and to a step-like lane discontinuity in the reference path.], placement: auto) <fig_traj_full>
+#figure(
+    image("image/fig_trajectory_full.png"),
+    caption: [Full-route comparison of the three controllers. _Left_: top-down view of the recorded reference path (grey dashed) and of the three closed-loop trajectories (cross-track PID in blue, heading-error PI in green, vision-based PI in red). Start and end of each run are marked with circles and crosses respectively. _Right_: cross-track error $e_y(t)$ as a function of time, with the root-mean-square error and the maximum absolute error reported in the legend. The two large transients around $t approx 18$–$22$ s and $t approx 70$–$75$ s correspond respectively to the $90 degree$ corner and to a step-like lane discontinuity in the reference path.],
+    placement: auto,
+) <fig_traj_full>
 
 A few comments on the figure. On the long straight section that follows the corner—roughly from $t approx 25$ s to $t approx 60$ s—the three trajectories are visually indistinguishable from the reference at the scale of the left-hand panel, even though small but persistent biases are visible on the right-hand error trace. These steady-state biases are the subject of @sec_smooth_turn. The two large excursions occur at the $90 degree$ corner, where the cross-track and the vision-based controllers overshoot by approximately $1$ m, and at the step-like lane discontinuity around $t approx 70$–$75$ s, where the maximum excursions of the run are recorded. Note that the cross-track error trace of the vision-based controller has a finite duration: the controller starts logging only once the lane detector returns a valid centre line, which is the reason why the red curve is missing on the very first seconds of the trace.
 
 The numerical metrics extracted from the right-hand panel are summarised in @tab_full_metrics. The heading-error PI achieves both the lowest RMSE and the lowest maximum excursion of the three architectures, by a clear margin. The cross-track PID is intermediate in RMSE but exhibits the worst maximum excursion of the three runs at the lane discontinuity. The vision-based PI has the highest RMSE, mainly because of a persistent steady-state bias on the smooth curve that the next section will analyse in detail.
 
 #text(size: 9.4558pt, top-edge: "cap-height", bottom-edge: "baseline")[#figure(
-  table(
-    columns: 4,
-    table.header(
-      [Controller], [RMSE $e_y$ [m]], [$max abs(e_y)$ [m]], [Worst-case event]
+    table(
+        columns: 4,
+        table.header(
+            [Controller],
+            [RMSE $e_y$ [m]],
+            [$max abs(e_y)$ [m]],
+            [Worst-case event],
+        ),
+        [Cross-track PID], [$0.205$], [$2.217$], [Step-like lane discontinuity],
+        [Heading-error PI],
+        [$0.120$],
+        [$1.185$],
+        [Step-like lane discontinuity],
+
+        [Vision-based PI], [$0.270$], [$1.962$], [Step-like lane discontinuity],
     ),
-    [Cross-track PID], [$0.205$], [$2.217$], [Step-like lane discontinuity],
-    [Heading-error PI], [$0.120$], [$1.185$], [Step-like lane discontinuity],
-    [Vision-based PI], [$0.270$], [$1.962$], [Step-like lane discontinuity],
-  ), caption: [Tracking metrics over the entire route, read directly from the legend of @fig_traj_full. Lower is better.]
+    caption: [Tracking metrics over the entire route, read directly from the legend of @fig_traj_full. Lower is better.],
 ) <tab_full_metrics>]
 
 The relative ordering of the three controllers—heading-error best, cross-track intermediate, vision-based worst on RMSE—matches the qualitative prediction of @arch_summary on the structural argument (heading-error preferred over cross-track because of the lower plant order) but adds a new piece of information that the theoretical chapter could not anticipate: the perception layer of the vision-based controller introduces a steady-state bias on the smooth curve that dominates its RMSE. The maximum-excursion ordering is different: there, the worst performer is the cross-track PID at $2.22$ m, with the vision-based PI at $1.96$ m and the heading-error PI at $1.19$ m. All three peaks coincide in time with the step-like lane discontinuity of the reference path, which is a deliberately adversarial test case discussed in @sec_lane_change.
@@ -58,7 +74,11 @@ The relative ordering of the three controllers—heading-error best, cross-track
 == Performance on a Smooth Curve <sec_smooth_turn>
 The first zoom-in focuses on the long smooth curve that occurs after the corner, between $t approx 25$ s and $t approx 45$ s. The road curvature in this section is gentle and approximately constant, so the relevant figure of merit is the _steady-state cross-track error_ that each controller maintains while tracking a constant-curvature reference. @fig_traj_smooth shows the top-down trajectory (left) and the cross-track error (right) restricted to this section of the route.
 
-#figure(image("image/fig_trajectory_smooth_turn.png"), caption: [Smooth-curve detail. _Left_: top-down view of the recorded reference (grey dashed) and of the three closed-loop trajectories along a gentle, approximately constant-curvature stretch of road between $X approx 615$ m and $X approx 640$ m. The three controllers track the same curve with different signed steady-state biases that are clearly visible at this magnification. _Right_: corresponding cross-track error between $t approx 25$ s and $t approx 45$ s. The vision-based PI exhibits a large negative bias that reaches $approx -0.7$ m at the apex of the curve, while the cross-track PID and the heading-error PI settle to biases of opposite sign with comparable magnitude of $approx +0.22$ m and $approx -0.22$ m respectively.], placement: auto) <fig_traj_smooth>
+#figure(
+    image("image/fig_trajectory_smooth_turn.png"),
+    caption: [Smooth-curve detail. _Left_: top-down view of the recorded reference (grey dashed) and of the three closed-loop trajectories along a gentle, approximately constant-curvature stretch of road between $X approx 615$ m and $X approx 640$ m. The three controllers track the same curve with different signed steady-state biases that are clearly visible at this magnification. _Right_: corresponding cross-track error between $t approx 25$ s and $t approx 45$ s. The vision-based PI exhibits a large negative bias that reaches $approx -0.7$ m at the apex of the curve, while the cross-track PID and the heading-error PI settle to biases of opposite sign with comparable magnitude of $approx +0.22$ m and $approx -0.22$ m respectively.],
+    placement: auto,
+) <fig_traj_smooth>
 
 Three quantitative observations can be made from @fig_traj_smooth. The cross-track PID (blue) settles to a positive steady-state error of approximately $+0.22$ m, which means that the vehicle rides on the _outside_ of the curve relative to the centre line. This is the classical signature of a PID that is fighting a constant disturbance—the road curvature acts as a constant input to the lateral plant—and that has not yet had the time to absorb it through its integral term. The heading-error PI (green) settles to a negative steady-state error of approximately $-0.22$ m, which means that the vehicle rides on the _inside_ of the curve. The opposite sign of the two biases is a direct consequence of the different error signal: the cross-track controller tries to keep $e_y = 0$ at the closest waypoint, whereas the heading-error controller tries to keep the look-ahead angle $alpha = 0$, and the look-ahead point on a curved reference is geometrically inside the curve relative to the closest waypoint. The two biases have similar magnitude but they reflect two different geometric definitions of "being on the centre".
 
@@ -69,7 +89,11 @@ It is also worth noting that the magnitudes involved here— $0.22$ m for the pa
 == Performance on a Sudden Lane Discontinuity <sec_lane_change>
 The second zoom-in focuses on a step-like discontinuity of the reference path that occurs around $t approx 70$–$75$ s, which corresponds to the right-hand spikes visible in @fig_traj_full and which is shown in detail in @fig_traj_change. This discontinuity is an artefact of the way the reference path was recorded: when the vehicle in autopilot mode merged from one lane into an adjacent one, the closest-waypoint logger jumped from the centre line of the first lane to the centre line of the second one, which produces a step of approximately one lane width ($3$ m) in the reference. From the controller's point of view, this is the worst possible kind of disturbance: a step in the reference rather than a step in the disturbance input.
 
-#figure(image("image/fig_trajectory_lane_change.png"), caption: [Step-like lane discontinuity. _Left_: top-down view of the reference (grey dashed) and of the three closed-loop trajectories in the neighbourhood of the discontinuity. The reference exhibits a step of approximately $3$ m at $X approx 325$ m. The three controllers react with very different transients. _Right_: cross-track error between $t approx 60$ s and $t approx 80$ s. The cross-track PID (blue) takes the largest excursion at $approx -2.22$ m; the vision-based PI (red) anticipates the discontinuity and undershoots by $approx -1.96$ m around $t approx 70$ s; the heading-error PI (green) is the smoothest of the three, with a single overshoot of $approx +1$ m.], placement: auto) <fig_traj_change>
+#figure(
+    image("image/fig_trajectory_lane_change.png"),
+    caption: [Step-like lane discontinuity. _Left_: top-down view of the reference (grey dashed) and of the three closed-loop trajectories in the neighbourhood of the discontinuity. The reference exhibits a step of approximately $3$ m at $X approx 325$ m. The three controllers react with very different transients. _Right_: cross-track error between $t approx 60$ s and $t approx 80$ s. The cross-track PID (blue) takes the largest excursion at $approx -2.22$ m; the vision-based PI (red) anticipates the discontinuity and undershoots by $approx -1.96$ m around $t approx 70$ s; the heading-error PI (green) is the smoothest of the three, with a single overshoot of $approx +1$ m.],
+    placement: auto,
+) <fig_traj_change>
 
 The three controllers react to the step in three qualitatively different ways. The cross-track PID (blue) follows the original lane up to the discontinuity, then suddenly sees a large positive cross-track error appear on its closest waypoint and reacts with a large steering input that overshoots the new lane by $approx 2.2$ m on the opposite side. This is the worst-case event of the whole run for this controller, and it is the manifestation of the limited phase margin of the cross-track loop: a step on the input of a double integrator is integrated twice before the controller has any chance to react, and the resulting overshoot is bounded only by the rate-limited saturation of the steering actuator. The transient takes approximately $2$ s to decay.
 
