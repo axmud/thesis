@@ -3,7 +3,7 @@
  The development and testing of autonomous driving technologies require a robust simulation environment. This environment must accurately model the real world, including vehicles, pedestrians, and various environmental conditions, while also providing comprehensive support for sensor simulation and enabling integration with analytical tools. After a detailed evaluation of existing simulators, including the Waymo Simulator, LGSVL Simulator, Sim4CV, and CARLA Simulator, based on critical features such as graphic quality, the accuracy of the physics engine, sensor simulation capabilities, the simulation of traffic and pedestrians, weather conditions, the ability to simulate different times of day, CARLA Simulator has been identified as the most suitable choice for my research objectives. CARLA provides high-quality graphics with Unreal Engine 4 @unreal_engine_4 and its physics engine accurately models vehicle dynamics and environmental interactions, offering a solid foundation for testing autonomous driving algorithms under various conditions. Moreover, its ability to simulate a wide range of sensors used in autonomous vehicles, such as cameras, LIDAR, radar, and GNSS, with high fidelity is crucial for the development and testing of perception algorithms. CARLA also excels in simulating dynamic traffic scenarios and pedestrian behaviors, facilitating comprehensive testing of autonomous driving systems in complex urban environments. The capability to simulate different weather conditions and times of day is important for assessing the performance of autonomous vehicle systems under various environmental conditions. For my research, CARLA’s Python API facilitates easy integration with an external controller, providing a seamless workflow for data analysis and algorithm testing. Consequently, CARLA Simulator’s advanced graphics, accurate physics engine, extensive sensor simulation capabilities, and effective traffic and pedestrian simulation set it as the ideal choice for my autonomous driving research. Its compatibility with Python API further supports my analytical and development needs, making it the most suitable simulator for my project.
  == Modeling the Car in the Environment
 In order to control a vehicle in the simulation, the controller must recognize the vehicle model. For this, a model of the vehicle is needed. Various models can be used when modeling the vehicle. Among these, the most commonly used ones usually offer a good balance between simplicity and accuracy, capable of representing the vehicle’s motion dynamics and control systems. In line with the needs of this project, the Dynamic Single-Track (DST) model has been chosen (shown in @single_track). The DST model (bicycle model) can be modeled with single-track wheels (one front and one rear wheel). This is equivalent to a model where the right and left sides of a four-wheeled vehicle are considered equal.
-#figure(image("image/single track model.jpeg"), caption: [Single Track Model]) <single_track>
+#figure(image("image/single track model.jpeg"), caption: [Single Track Model], placement: auto) <single_track>
 *Vehicle variables:* \
 - $δ_f$: steering angle.\
 - $β$: vehicle sleep angle = angle between the vehicle longitudinal axis and velocity\
@@ -14,7 +14,7 @@ In order to control a vehicle in the simulation, the controller must recognize t
 - $l_f$: distance CoG - front wheel center
 - $l_r$: distance CoG - rear wheel center
 - $c_f,c_r$: front/rear cornering stiffnesses.
-#figure(image("image/vehicle reference system.jpeg"), caption: [Vehicle Reference System]) <Vehicle_reference>
+#figure(image("image/vehicle reference system.jpeg"), caption: [Vehicle Reference System], placement: auto) <Vehicle_reference>
 *Vehicle Dynamic parameters:*
 - $X,Y$: coordinates of the vehicle CoG in an inertial reference frame (shown in @Vehicle_reference)
 - $ψ$: yaw angle
@@ -47,7 +47,7 @@ where $β_f$ and $β_r$ and $f_p (β)$ is given by the Pacejka’s magic formula
 *Pacejka’s magic formula:*
 $  f_p (β) = p_1 sin(p_2 arctan(p_3 β − p_4(p_3 β − arctan(p_3 β)))) $
 $p_1$: peak value, $p_2$: shape factor, $p_3$: stiffness factor, $p_4$: curvature factor. Linearizing this formula, we find $p_1 p_2 p_3 = C_f$ (or $C_r$).
-#figure(image("image/friction coef.jpeg"), caption: [Friction Coefficents in different conditions]) <friction_coef>
+#figure(image("image/friction coef.jpeg"), caption: [Friction Coefficents in different conditions], placement: auto) <friction_coef>
 In the real world conditions, these parameters are really hard to measure or estimate because they change based on the road conditions (see @friction_coef).
 
 The real parameters of the vehicle in the simulation environment have been found with the help of Carla’s `Vehicle.physics` command.
