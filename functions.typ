@@ -1,5 +1,3 @@
-#import "@preview/wrap-it:0.1.1": wrap-content
-
 #let render_face(body) = {
     pdf.attach("abstract.typ", relationship: "source")
     pdf.attach("Appendix A.typ", relationship: "source")
