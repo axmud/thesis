@@ -23,6 +23,9 @@
     let Huge = 25pt
     let spac = 1.5em
 
+import "abbr.typ": show-rule, make, add-alt, config, add
+show: show-rule
+
     set text(
         font: "sfrm1200",
         size: normalsize,

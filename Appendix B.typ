@@ -1,4 +1,4 @@
-#import "functions.typ": *
+
 
 = Code Excerpts <app:b>
 This appendix collects the Python excerpts that support @ch2 and @ch3. The full source tree is available in the open-source repository `LaneDetCarla` @lanedetcarla; what follows is a curated selection of the routines that are referenced explicitly in the text.
@@ -99,7 +99,7 @@ pd.DataFrame(data).to_csv(\"manual_drive_log.csv\", index=False)",
 )
 
 == Cross-Track Error (Chapter 3, @sec_xtrack)
-The vectorised implementation of @eqt:eq_lane_shift. A monotonically increasing global index is used so that the search remains $O(1)$ in the length of the reference path and so that the controller cannot "snap" backwards on a closed circuit.
+The vectorized implementation of @eqt:eq_lane_shift. A monotonically increasing global index is used so that the search remains $O(1)$ in the length of the reference path and so that the controller cannot "snap" backwards on a closed circuit.
 
 #raw(
     "index = 0
@@ -355,7 +355,7 @@ def tune_longitudinal(K, tau, wn):
 )
 
 == Manual-Override Class
-The `ControlObject` class implements the keyboard fallback used in all three architectures. The class follows a two-step design: the `parse_control` method is called for every keyboard event and only updates the internal flags; the heavier `process_control` method is called once per simulation tick and turns those flags into actual `VehicleControl` values, with progressive throttle ramping, automatic reverse engagement at low speed, and exponential return-to-centre on the steering wheel.
+The `ControlObject` class implements the keyboard fallback used in all three architectures. The class follows a two-step design: the `parse_control` method is called for every keyboard event and only updates the internal flags; the heavier `process_control` method is called once per simulation tick and turns those flags into actual `VehicleControl` values, with progressive throttle ramping, automatic reverse engagement at low speed, and exponential return-to-center on the steering wheel.
 
 #raw(
     "class ControlObject(object):
